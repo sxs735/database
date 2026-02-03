@@ -2,6 +2,7 @@
 import re
 import csv
 import json
+import shutil
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from database_api import DatabaseAPI
@@ -9,12 +10,13 @@ from datetime import datetime
 
 MAIN_PATTERN = re.compile(r"""
                           ^(?P<datatype>[^_]+)
-                          _(?P<doe>[^_]+)
                           _(?P<wafer>[^_]+)
+                          _(?P<doe>[^_]+)
                           _die(?P<die>\d+)
                           _(?P<cage>[^_]+)
                           _(?P<device>[^_]+)
                           _(?P<temperature>-?\d+)C
+                          _rep(?P<repeat>\d+)
                           _ch_(?P<ch_in>\d+)
                           _(?P<ch_out>\d+)
                           _(?P<power>-?\d+)dBm
@@ -31,7 +33,7 @@ def parse_filename(filename: str) -> dict:
     result = m.groupdict()
     rest = result.pop("rest")
 
-    result["electrical"] = []
+    result["SMU"] = []
     result["arguments"] = set()
 
     if not rest:
@@ -44,14 +46,14 @@ def parse_filename(filename: str) -> dict:
         token = tokens[i]
         # ---------- SMU ----------
         if token == "SMU":
-            result["electrical"].append({"device": tokens[i + 1],
+            result["SMU"].append({"device": tokens[i + 1],
                                          "channel": tokens[i + 2],
                                          "value": tokens[i + 3]})
             i += 4
             continue
-        # ---------- electrical (device, ch, value) ----------
+        # ---------- SMU (device, ch, value) ----------
         if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
-            result["electrical"].append({"device": tokens[i],
+            result["SMU"].append({"device": tokens[i],
                                          "channel": tokens[i + 1],
                                          "value": tokens[i + 2]})
             i += 3
@@ -66,6 +68,45 @@ def parse_filename(filename: str) -> dict:
         i += 1
     return result
 
+def move_measurement_data(source_dir: str, target_root: str):
+    """
+    將原始量測資料搬到 MeasurementData 結構資料夾。
+    
+    Parameters:
+    - source_dir: 原始資料夾路徑，例如 ".\\20260204"
+    - target_root: 新資料夾根目錄，例如 ".\\MeasurementData"
+    """
+    source_dir = Path(source_dir)
+    target_root = Path(target_root)
+    
+    # 記錄每個 DUT 的 repeat 次數
+    
+    for f in source_dir.iterdir():
+        if f.suffix.lower() not in {".csv", ".json"}:
+            continue
+        
+        # 解析檔名
+        try:
+            meta = parse_filename(f.name)
+        except ValueError as e:
+            print(f"Skipped {f.name}: {e}")
+            continue
+        
+        # DUT 唯一標識
+        dut_key = (meta["wafer"], meta["doe"], meta["die"], meta["cage"], meta["device"])
+        repeat = int(meta["repeat"])
+        
+        # session_name = 原資料夾名稱 + repeat (兩位數)
+        session_name = f"{source_dir.name}_rep{repeat:02d}"
+        
+        # 目標資料夾
+        target_dir = target_root / meta["wafer"] / meta["doe"] / f"die{meta['die']}" / meta["cage"] / meta["device"] / session_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 移動檔案
+        dst = target_dir / f.name
+        shutil.move(str(f), dst)
+        print(f"Moved {f.name} -> {dst}")
     
 #%%
 

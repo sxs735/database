@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS MeasurementData (
     data_type TEXT NOT NULL,     -- e.g. 'spectrum'
     file_path TEXT NOT NULL,
     created_time DATETIME,
-    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE);
+    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
+    UNIQUE (file_path) ON CONFLICT IGNORE);
 
 CREATE INDEX IF NOT EXISTS idx_data_session ON MeasurementData (session_id);
 CREATE INDEX IF NOT EXISTS idx_data_type ON MeasurementData (data_type);

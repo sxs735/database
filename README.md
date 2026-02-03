@@ -399,7 +399,7 @@ python batch_import.py ./data_folder my_database.db
 try:
     with DatabaseAPI("database.db") as db:
         # 進行操作
-        dut_id = db.insert_dut("W001", 1, "C1", "D001")
+        dut_id = db.insert_dut("W001", "D001", 1, "C1", "D001")
 except sqlite3.IntegrityError as e:
     print(f"外鍵約束或其他完整性約束違反: {e}")
 except sqlite3.OperationalError as e:
@@ -411,8 +411,9 @@ except FileNotFoundError as e:
 ### 約束衝突行為
 
 由於使用 `ON CONFLICT IGNORE`，以下情況**不會**產生錯誤：
-- DUT 重複插入（wafer+die+cage+device 相同）
+- DUT 重複插入（wafer+DOE+die+cage+device 相同）
 - ExperimentalConditions 重複插入（session_id+key+unit 相同）
+- MeasurementData 重複插入（file_path 相同）
 - DataInfo 重複插入（data_id+key+unit 相同）
 - AnalysisFeatures 重複插入（analysis_id+feature_type+feature_index 相同）
 - FeatureValues 重複插入（feature_id+key+unit 相同）

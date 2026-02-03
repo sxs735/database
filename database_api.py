@@ -191,11 +191,18 @@ class DatabaseAPI:
         if created_time is None:
             created_time = datetime.now().replace(microsecond=0)
             
-        cursor = self.conn.execute("""INSERT INTO MeasurementData 
+        cursor = self.conn.execute("""INSERT OR IGNORE INTO MeasurementData 
                                    (session_id, data_type, file_path, created_time)
                                    VALUES (?, ?, ?, ?)""",
                                    (session_id, data_type, file_path, created_time))
         self.conn.commit()
+        if cursor.rowcount == 0:
+            cursor = self.conn.execute(
+                """SELECT data_id FROM MeasurementData WHERE file_path = ?""",
+                (file_path,)
+            )
+            row = cursor.fetchone()
+            return row['data_id'] if row else 0
         return cursor.lastrowid
 
     # DataInfo 表
