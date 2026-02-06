@@ -3,7 +3,6 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
-
 class DatabaseAPI:
     """基於 SQLite 的資料庫 API，用於管理光譜測量數據"""
     
@@ -101,20 +100,17 @@ class DatabaseAPI:
         Returns:
             DUT_id
         """
-        cursor = self.conn.execute("""INSERT OR IGNORE INTO DUT 
-                                   (wafer, DOE, die, cage, device) 
-                                   VALUES (?, ?, ?, ?, ?)""",
+        cursor = self.conn.execute("""INSERT INTO DUT 
+                                   (wafer, DOE, die, cage, device)
+                                   VALUES (?, ?, ?, ?, ?)
+                                   ON CONFLICT (wafer, DOE, die, cage, device) DO UPDATE SET
+                                   wafer = excluded.wafer   -- no-op update
+                                   RETURNING DUT_id""",
                                    (wafer, doe, die, cage, device))
+        row = cursor.fetchone()
         self.conn.commit()
-        if cursor.rowcount == 0:
-            cursor = self.conn.execute(
-                """SELECT DUT_id FROM DUT WHERE wafer = ? AND DOE = ? AND die = ? AND cage = ? AND device = ?""",
-                (wafer, doe, die, cage, device)
-            )
-            row = cursor.fetchone()
-            return row['DUT_id'] if row else 0
-        return cursor.lastrowid
-    
+        return row["DUT_id"]
+  
     # MeasurementSessions 表
     def insert_measurement_session(self, 
                                    dut_id: int,
@@ -139,13 +135,19 @@ class DatabaseAPI:
         """
         if measurement_datetime is None:
             measurement_datetime = datetime.now().replace(microsecond=0)
-            
+        else:
+            measurement_datetime = datetime.fromtimestamp(measurement_datetime)
+
         cursor = self.conn.execute("""INSERT INTO MeasurementSessions 
-                                   (DUT_id, session_name, measurement_datetime, operator, system_version, notes)
-                                   VALUES (?, ?, ?, ?, ?, ?)""",
-                                   (dut_id, session_name, measurement_datetime, operator, system_version, notes))
+                                  (DUT_id, session_name, measurement_datetime, operator, system_version, notes)
+                                   VALUES (?, ?, ?, ?, ?, ?)
+                                   ON CONFLICT (DUT_id, session_name) DO UPDATE SET
+                                   DUT_id = excluded.DUT_id   -- no-op update
+                                   RETURNING session_id""",
+                                  (dut_id, session_name, measurement_datetime, operator, system_version, notes))
+        row = cursor.fetchone()
         self.conn.commit()
-        return cursor.lastrowid
+        return row["session_id"]
     
     # ExperimentalConditions 表
     def insert_experimental_conditions(self, session_id: int, conditions: Dict[str, Any]):
@@ -190,20 +192,19 @@ class DatabaseAPI:
         """
         if created_time is None:
             created_time = datetime.now().replace(microsecond=0)
+        else:
+            created_time = datetime.fromtimestamp(created_time)
             
         cursor = self.conn.execute("""INSERT OR IGNORE INTO MeasurementData 
                                    (session_id, data_type, file_path, created_time)
-                                   VALUES (?, ?, ?, ?)""",
+                                   VALUES (?, ?, ?, ?)
+                                   ON CONFLICT (session_id, file_path) DO UPDATE SET
+                                   session_id = excluded.session_id   -- no-op update
+                                   RETURNING data_id""",
                                    (session_id, data_type, file_path, created_time))
+        row = cursor.fetchone()
         self.conn.commit()
-        if cursor.rowcount == 0:
-            cursor = self.conn.execute(
-                """SELECT data_id FROM MeasurementData WHERE file_path = ?""",
-                (file_path,)
-            )
-            row = cursor.fetchone()
-            return row['data_id'] if row else 0
-        return cursor.lastrowid
+        return row["data_id"]
 
     # DataInfo 表
     def insert_data_info(self, data_id: int, info: Dict[str, Any]):
