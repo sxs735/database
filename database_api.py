@@ -1,10 +1,32 @@
+import re
+import shutil
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
+from analysis import read_spectrum
+from tqdm import tqdm
+
 class DatabaseAPI:
     """基於 SQLite 的資料庫 API，用於管理光譜測量數據"""
+
+    SUPPORTED_EXTENSIONS = {".csv", ".txt", ".s2p"}
+    MAIN_PATTERN = re.compile(r"""
+                              ^(?P<datatype>[^_]+)
+                              _(?P<wafer>[^_]+)
+                              _(?P<doe>[^_]+)
+                              _die(?P<die>\d+)
+                              _(?P<cage>[^_]+)
+                              _(?P<device>[^_]+)
+                              _(?P<temperature>-?\d+)C
+                              _rep(?P<repeat>\d+)
+                              _ch_(?P<ch_in>\d+)
+                              _(?P<ch_out>\d+)
+                              _(?P<power>-?\d+)dBm
+                              (?P<rest>.*)
+                              \.(?:csv|txt|s2p)$""",
+                              re.VERBOSE)
     
     def __init__(self, db_path: str = "measurement_data.db"):
         """
@@ -35,6 +57,165 @@ class DatabaseAPI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager 支援"""
         self.close()
+
+    @classmethod
+    def parse_filename(cls, filename: str) -> Dict[str, Any]:
+        name = Path(filename).name
+        match = cls.MAIN_PATTERN.match(name)
+
+        if not match:
+            raise ValueError(f"檔名格式不符: {filename}")
+
+        result = match.groupdict()
+        rest = result.pop("rest")
+
+        result["SMU"] = []
+        result["arguments"] = []
+
+        if not rest:
+            return result
+
+        tokens = rest.strip("_").split("_")
+        i = 0
+        ec_i = 1
+        arg_i = 1
+        pass_SMU = False
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "SMU":
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 3])
+                result["SMU"].append({f"ec{ec_i} type": tokens[i + 1],
+                                      f"ec{ec_i} channel": tokens[i + 2],
+                                      f"ec{ec_i} value": (float(match[1]), match[2])})
+                i += 4
+                ec_i += 1
+                continue
+            if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 2])
+                result["SMU"].append({f"ec{ec_i} type": tokens[i],
+                                      f"ec{ec_i} channel": tokens[i + 1],
+                                      f"ec{ec_i} value": (float(match[1]), match[2])})
+                i += 3
+                ec_i += 1
+                continue
+            if token == "arg":
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 1])
+                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
+                arg_i += 1
+                i += 2
+                pass_SMU = True
+                continue
+            if token:
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", token)
+                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
+                arg_i += 1
+            i += 1
+
+        return result
+
+    @classmethod
+    def parse_folder(cls, folder_path: str) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
+        """
+        檢測資料夾內所有檔案名稱是否符合指定格式
+
+        Returns:
+        - (valid_files, invalid_files) 元組
+          - valid_files: {Path物件: 解析後的元數據字典, ...}
+          - invalid_files: 不符合格式的檔案名稱列表
+        """
+        folder = Path(folder_path)
+
+        if not folder.exists():
+            raise FileNotFoundError(f"資料夾不存在: {folder_path}")
+
+        valid_files: Dict[Path, Dict[str, Any]] = {}
+        invalid_files: List[str] = []
+
+        for ext in cls.SUPPORTED_EXTENSIONS:
+            for file_path in folder.glob(f"*{ext}"):
+                try:
+                    meta = cls.parse_filename(file_path.name)
+                    valid_files[file_path] = meta
+                except ValueError:
+                    invalid_files.append(file_path.name)
+
+        return valid_files, invalid_files
+
+    def import_measurement_folder(self,
+                                  folder_path: str,
+                                  target_root: Optional[str] = None,
+                                  schema_file: str = "schema.sql",
+                                  operator: str = "T&P",
+                                  system_version: str = "CM300v1.0",
+                                  notes: str = "",) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
+        """
+        解析資料夾內檔案並寫入資料庫，完成後移動檔案到目標資料夾。
+
+        Returns:
+        - (valid_files, invalid_files)
+        """
+        folder = Path(folder_path)
+        valid_files, invalid_files = self.parse_folder(folder)
+
+        if target_root is None:
+            target_root_path = folder.parent / "MeasurementData"
+        else:
+            target_root_path = Path(target_root)
+
+        try:
+            self.create_database(schema_file)
+        except Exception:
+            pass
+
+        for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
+            file_info = dict(file_info_raw)
+            session_name = folder.name + ("_rep" + file_info["repeat"] if file_info["repeat"] != "1" else "")
+            target_dir = (target_root_path/ 
+                          file_info["wafer"]/ 
+                          file_info["doe"]/ 
+                          f"die{file_info['die']}"/ 
+                          file_info["cage"]/ 
+                          file_info["device"]/ session_name)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            dst = target_dir / filepath.name
+
+            dut_id = self.insert_dut(wafer=file_info["wafer"],
+                                     doe=file_info["doe"],
+                                     die=file_info["die"],
+                                     cage=file_info["cage"],
+                                     device=file_info["device"])
+
+            session_id = self.insert_measurement_session(dut_id=dut_id,
+                                                         session_name=session_name,
+                                                         operator=operator,
+                                                         system_version=system_version,
+                                                         measurement_datetime=folder.stat().st_mtime,
+                                                         notes=notes)
+
+            self.insert_experimental_conditions(session_id,{"temperature": (file_info["temperature"], "°C")})
+
+            data_id = self.insert_measurement_data(session_id=session_id,
+                                                   data_type=file_info["datatype"],
+                                                   created_time=filepath.stat().st_mtime,
+                                                   file_path=str(dst.resolve()))
+
+            smu = file_info.pop("SMU")
+            smu = {k: v for d in smu for k, v in d.items()}
+            arguments = file_info.pop("arguments")
+            arguments = {k: v for d in arguments for k, v in d.items()}
+            other: Dict[str, Any] = {}
+            if file_info["datatype"] in ["SPCM"]:
+                other, _ = read_spectrum(filepath)
+
+            self.insert_data_info(data_id,
+                                  {"channel_in": file_info["ch_in"],
+                                   "channel_out": file_info["ch_out"],
+                                   "power": (file_info["power"], "dBm")}
+                                   | smu | arguments | other)
+
+            shutil.move(str(filepath), dst)
+        print(f"匯入資料庫完成")
+        return valid_files, invalid_files
     
     # =========================
     # 1. 創建資料庫
