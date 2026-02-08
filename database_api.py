@@ -57,166 +57,7 @@ class DatabaseAPI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager 支援"""
         self.close()
-
-    @classmethod
-    def parse_filename(cls, filename: str) -> Dict[str, Any]:
-        name = Path(filename).name
-        match = cls.MAIN_PATTERN.match(name)
-
-        if not match:
-            raise ValueError(f"檔名格式不符: {filename}")
-
-        result = match.groupdict()
-        rest = result.pop("rest")
-
-        result["SMU"] = []
-        result["arguments"] = []
-
-        if not rest:
-            return result
-
-        tokens = rest.strip("_").split("_")
-        i = 0
-        ec_i = 1
-        arg_i = 1
-        pass_SMU = False
-        while i < len(tokens):
-            token = tokens[i]
-            if token == "SMU":
-                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 3])
-                result["SMU"].append({f"ec{ec_i} type": tokens[i + 1],
-                                      f"ec{ec_i} channel": tokens[i + 2],
-                                      f"ec{ec_i} value": (float(match[1]), match[2])})
-                i += 4
-                ec_i += 1
-                continue
-            if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
-                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 2])
-                result["SMU"].append({f"ec{ec_i} type": tokens[i],
-                                      f"ec{ec_i} channel": tokens[i + 1],
-                                      f"ec{ec_i} value": (float(match[1]), match[2])})
-                i += 3
-                ec_i += 1
-                continue
-            if token == "arg":
-                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 1])
-                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
-                arg_i += 1
-                i += 2
-                pass_SMU = True
-                continue
-            if token:
-                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", token)
-                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
-                arg_i += 1
-            i += 1
-
-        return result
-
-    @classmethod
-    def parse_folder(cls, folder_path: str) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
-        """
-        檢測資料夾內所有檔案名稱是否符合指定格式
-
-        Returns:
-        - (valid_files, invalid_files) 元組
-          - valid_files: {Path物件: 解析後的元數據字典, ...}
-          - invalid_files: 不符合格式的檔案名稱列表
-        """
-        folder = Path(folder_path)
-
-        if not folder.exists():
-            raise FileNotFoundError(f"資料夾不存在: {folder_path}")
-
-        valid_files: Dict[Path, Dict[str, Any]] = {}
-        invalid_files: List[str] = []
-
-        for ext in cls.SUPPORTED_EXTENSIONS:
-            for file_path in folder.glob(f"*{ext}"):
-                try:
-                    meta = cls.parse_filename(file_path.name)
-                    valid_files[file_path] = meta
-                except ValueError:
-                    invalid_files.append(file_path.name)
-
-        return valid_files, invalid_files
-
-    def import_measurement_folder(self,
-                                  folder_path: str,
-                                  target_root: Optional[str] = None,
-                                  schema_file: str = "schema.sql",
-                                  operator: str = "T&P",
-                                  system_version: str = "CM300v1.0",
-                                  notes: str = "",) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
-        """
-        解析資料夾內檔案並寫入資料庫，完成後移動檔案到目標資料夾。
-
-        Returns:
-        - (valid_files, invalid_files)
-        """
-        folder = Path(folder_path)
-        valid_files, invalid_files = self.parse_folder(folder)
-
-        if target_root is None:
-            target_root_path = folder.parent / "MeasurementData"
-        else:
-            target_root_path = Path(target_root)
-
-        try:
-            self.create_database(schema_file)
-        except Exception:
-            pass
-
-        for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
-            file_info = dict(file_info_raw)
-            session_name = folder.name + ("_rep" + file_info["repeat"] if file_info["repeat"] != "1" else "")
-            target_dir = (target_root_path/ 
-                          file_info["wafer"]/ 
-                          file_info["doe"]/ 
-                          f"die{file_info['die']}"/ 
-                          file_info["cage"]/ 
-                          file_info["device"]/ session_name)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            dst = target_dir / filepath.name
-
-            dut_id = self.insert_dut(wafer=file_info["wafer"],
-                                     doe=file_info["doe"],
-                                     die=file_info["die"],
-                                     cage=file_info["cage"],
-                                     device=file_info["device"])
-
-            session_id = self.insert_measurement_session(dut_id=dut_id,
-                                                         session_name=session_name,
-                                                         operator=operator,
-                                                         system_version=system_version,
-                                                         measurement_datetime=folder.stat().st_mtime,
-                                                         notes=notes)
-
-            self.insert_experimental_conditions(session_id,{"temperature": (file_info["temperature"], "°C")})
-
-            data_id = self.insert_measurement_data(session_id=session_id,
-                                                   data_type=file_info["datatype"],
-                                                   created_time=filepath.stat().st_mtime,
-                                                   file_path=str(dst.resolve()))
-
-            smu = file_info.pop("SMU")
-            smu = {k: v for d in smu for k, v in d.items()}
-            arguments = file_info.pop("arguments")
-            arguments = {k: v for d in arguments for k, v in d.items()}
-            other: Dict[str, Any] = {}
-            if file_info["datatype"] in ["SPCM"]:
-                other, _ = read_spectrum(filepath)
-
-            self.insert_data_info(data_id,
-                                  {"channel_in": file_info["ch_in"],
-                                   "channel_out": file_info["ch_out"],
-                                   "power": (file_info["power"], "dBm")}
-                                   | smu | arguments | other)
-
-            shutil.move(str(filepath), dst)
-        print(f"匯入資料庫完成")
-        return valid_files, invalid_files
-    
+   
     # =========================
     # 1. 創建資料庫
     # =========================
@@ -267,7 +108,7 @@ class DatabaseAPI:
     # =========================
     
     # DUT 表
-    def insert_dut(self, wafer: str, doe: str, die: int, cage: str, device: str) -> int:
+    def insert_dut(self, wafer: str, doe: str, die: int, cage: str, device: str, commit: bool = True) -> int:
         """
         插入 DUT 記錄
         
@@ -289,7 +130,8 @@ class DatabaseAPI:
                                    RETURNING DUT_id""",
                                    (wafer, doe, die, cage, device))
         row = cursor.fetchone()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return row["DUT_id"]
   
     # MeasurementSessions 表
@@ -299,7 +141,8 @@ class DatabaseAPI:
                                    measurement_datetime: Optional[datetime] = None,
                                    operator: Optional[str] = None,
                                    system_version: Optional[str] = None,
-                                   notes: Optional[str] = None) -> int:
+                                   notes: Optional[str] = None,
+                                   commit: bool = True) -> int:
         """
         插入測量會話記錄
         
@@ -317,7 +160,7 @@ class DatabaseAPI:
         if measurement_datetime is None:
             measurement_datetime = datetime.now().replace(microsecond=0)
         else:
-            measurement_datetime = datetime.fromtimestamp(measurement_datetime)
+            measurement_datetime = datetime.fromtimestamp(measurement_datetime).replace(microsecond=0)
 
         cursor = self.conn.execute("""INSERT INTO MeasurementSessions 
                                   (DUT_id, session_name, measurement_datetime, operator, system_version, notes)
@@ -327,11 +170,12 @@ class DatabaseAPI:
                                    RETURNING session_id""",
                                   (dut_id, session_name, measurement_datetime, operator, system_version, notes))
         row = cursor.fetchone()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return row["session_id"]
     
     # ExperimentalConditions 表
-    def insert_experimental_conditions(self, session_id: int, conditions: Dict[str, Any]):
+    def insert_experimental_conditions(self, session_id: int, conditions: Dict[str, Any], commit: bool = True):
         """
         批量插入實驗條件
         
@@ -349,16 +193,20 @@ class DatabaseAPI:
             
             self.conn.execute("""INSERT OR IGNORE INTO ExperimentalConditions 
                               (session_id, key, value, unit)
-                              VALUES (?, ?, ?, ?)""",
+                              VALUES (?, ?, ?, ?)
+                              ON CONFLICT (session_id, key, unit) DO UPDATE SET
+                              value = excluded.value""",
                               (session_id, key, value, unit))
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
     
     # MeasurementData 表
     def insert_measurement_data(self,
                                 session_id: int,
                                 data_type: str,
                                 file_path: str,
-                                created_time: Optional[datetime] = None) -> int:
+                                created_time: Optional[datetime] = None,
+                                commit: bool = True) -> int:
         """
         插入測量數據記錄
         
@@ -384,11 +232,12 @@ class DatabaseAPI:
                                    RETURNING data_id""",
                                    (session_id, data_type, file_path, created_time))
         row = cursor.fetchone()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return row["data_id"]
 
     # DataInfo 表
-    def insert_data_info(self, data_id: int, info: Dict[str, Any]):
+    def insert_data_info(self, data_id: int, info: Dict[str, Any], commit: bool = True):
         """
         批量插入測量數據資訊
 
@@ -405,18 +254,26 @@ class DatabaseAPI:
 
             self.conn.execute("""INSERT OR IGNORE INTO DataInfo 
                               (data_id, key, value, unit)
-                              VALUES (?, ?, ?, ?)""",
+                              VALUES (?, ?, ?, ?)
+                              ON CONFLICT (data_id, key, unit) DO UPDATE SET
+                              value = excluded.value""",
                               (data_id, key, value, unit))
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
     
     # AnalysisRuns 表
-    def insert_analysis_run(self,session_id: int,analysis_type: str,created_time: Optional[datetime] = None) -> int:
+    def insert_analysis_run(self,session_id: int,
+                            analysis_type: str,
+                            analysis_index: int,
+                            created_time: Optional[datetime] = None, 
+                            commit: bool = True) -> int:
         """
         插入分析執行記錄
         
         Args:
             session_id: 會話 ID
             analysis_type: 分析類型（如 'peak_detection'）
+            analysis_index: 分析索引
             created_time: 創建時間（默認為當前時間）
             
         Returns:
@@ -426,14 +283,29 @@ class DatabaseAPI:
             created_time = datetime.now().replace(microsecond=0)
             
         cursor = self.conn.execute("""INSERT INTO AnalysisRuns 
-                                   (session_id, analysis_type, created_time)
-                                   VALUES (?, ?, ?)""",
-                                   (session_id, analysis_type, created_time))
-        self.conn.commit()
-        return cursor.lastrowid
+                                   (session_id, analysis_type, analysis_index, created_time)
+                                   VALUES (?, ?, ?, ?)
+                                   ON CONFLICT (session_id, analysis_type, analysis_index) DO UPDATE SET
+                                   created_time = excluded.created_time
+                                   RETURNING analysis_id""",
+                                   (session_id, analysis_type, analysis_index, created_time))
+        row = cursor.fetchone()
+        if commit:
+            self.conn.commit()
+        return row["analysis_id"]
+
+    # AnalysisInputs 表
+    def insert_analysis_input(self, analysis_id: int, data_id: int, commit: bool = True) -> None:
+        """建立分析與測量數據的對應"""
+        self.conn.execute("""INSERT OR IGNORE INTO AnalysisInputs
+                          (analysis_id, data_id)
+                          VALUES (?, ?)""",
+                          (analysis_id, data_id))
+        if commit:
+            self.conn.commit()
     
     # AnalysisFeatures 表
-    def insert_analysis_feature(self,analysis_id: int,feature_type: str,feature_index: int) -> int:
+    def insert_analysis_feature(self,analysis_id: int,feature_type: str,feature_index: int, commit: bool = True) -> int:
         """
         插入分析特徵記錄
         
@@ -447,13 +319,18 @@ class DatabaseAPI:
         """
         cursor = self.conn.execute("""INSERT INTO AnalysisFeatures 
                                    (analysis_id, feature_type, feature_index)
-                                   VALUES (?, ?, ?)""",
+                                   VALUES (?, ?, ?)
+                                   ON CONFLICT (analysis_id, feature_type, feature_index) DO UPDATE SET
+                                   feature_index = excluded.feature_index
+                                   RETURNING feature_id""",
                                    (analysis_id, feature_type, feature_index))
-        self.conn.commit()
-        return cursor.lastrowid
+        row = cursor.fetchone()
+        if commit:
+            self.conn.commit()
+        return row["feature_id"]
     
     # FeatureValues 表
-    def insert_feature_values(self, feature_id: int, values: Dict[str, Any]):
+    def insert_feature_values(self, feature_id: int, values: Dict[str, Any], commit: bool = True):
         """
         批量插入特徵值
         
@@ -471,9 +348,12 @@ class DatabaseAPI:
             
             self.conn.execute("""INSERT OR IGNORE INTO FeatureValues 
                               (feature_id, key, value, unit)
-                              VALUES (?, ?, ?, ?)""",
+                              VALUES (?, ?, ?, ?)
+                              ON CONFLICT (feature_id, key, unit) DO UPDATE SET
+                              value = excluded.value""",
                               (feature_id, key, value, unit))
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
     
     # =========================
     # 3. 查詢資料 (SELECT)
@@ -575,6 +455,28 @@ class DatabaseAPI:
         else:
             return self.query("SELECT * FROM AnalysisRuns WHERE session_id = ?",
                               (session_id,))
+
+    # AnalysisInputs 查詢
+    def get_analysis_inputs(self, analysis_id: int) -> List[Dict[str, Any]]:
+        """查詢分析所對應的測量數據 ID"""
+        return self.query("SELECT * FROM AnalysisInputs WHERE analysis_id = ?",
+                          (analysis_id,))
+
+    def get_analysis_input_data(self, analysis_id: int) -> List[Dict[str, Any]]:
+        """查詢分析所對應的完整測量數據紀錄"""
+        sql = """SELECT md.* FROM AnalysisInputs ai
+                 JOIN MeasurementData md ON ai.data_id = md.data_id
+                 WHERE ai.analysis_id = ?
+                 ORDER BY md.data_id"""
+        return self.query(sql, (analysis_id,))
+
+    def get_analyses_by_data(self, data_id: int) -> List[Dict[str, Any]]:
+        """查詢某筆測量數據被哪些分析使用"""
+        sql = """SELECT ar.* FROM AnalysisInputs ai
+                 JOIN AnalysisRuns ar ON ai.analysis_id = ar.analysis_id
+                 WHERE ai.data_id = ?
+                 ORDER BY ar.analysis_id"""
+        return self.query(sql, (data_id,))
     
     # AnalysisFeatures 查詢
     def get_features_by_analysis(self,analysis_id: int,feature_type: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -650,6 +552,7 @@ class DatabaseAPI:
         # 分析執行
         analysis_runs = self.get_analysis_runs_by_session(session_id)
         for analysis in analysis_runs:
+            analysis['inputs'] = self.get_analysis_input_data(analysis['analysis_id'])
             # 每個分析的特徵
             features = self.get_features_by_analysis(analysis['analysis_id'])
             for feature in features:
@@ -715,6 +618,13 @@ class DatabaseAPI:
         cursor = self.conn.execute("DELETE FROM AnalysisRuns WHERE analysis_id = ?", (analysis_id,))
         self.conn.commit()
         return cursor.rowcount
+
+    def delete_analysis_input(self, analysis_id: int, data_id: int) -> int:
+        """刪除分析與測量數據的對應"""
+        cursor = self.conn.execute("DELETE FROM AnalysisInputs WHERE analysis_id = ? AND data_id = ?",
+                                   (analysis_id, data_id))
+        self.conn.commit()
+        return cursor.rowcount
     
     def delete_analysis_feature(self, feature_id: int) -> int:
         """刪除分析特徵（會級聯刪除相關特徵值）"""
@@ -754,7 +664,7 @@ class DatabaseAPI:
     def get_database_stats(self) -> Dict[str, int]:
         """獲取資料庫統計信息"""
         tables = ['DUT', 'MeasurementSessions', 'ExperimentalConditions', 
-                  'MeasurementData', 'DataInfo', 'AnalysisRuns', 'AnalysisFeatures', 'FeatureValues']
+                  'MeasurementData', 'DataInfo', 'AnalysisRuns', 'AnalysisInputs', 'AnalysisFeatures', 'FeatureValues']
         return {table: self.get_table_count(table) for table in tables}
 
     def export_all_tables_to_xlsx(self, output_path: str = "database_export.xlsx") -> str:
@@ -782,3 +692,179 @@ class DatabaseAPI:
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
         return output_path
+
+    @classmethod
+    def parse_filename(cls, filename: str) -> Dict[str, Any]:
+        name = Path(filename).name
+        match = cls.MAIN_PATTERN.match(name)
+
+        if not match:
+            raise ValueError(f"檔名格式不符: {filename}")
+
+        result = match.groupdict()
+        rest = result.pop("rest")
+
+        result["SMU"] = []
+        result["arguments"] = []
+
+        if not rest:
+            return result
+
+        tokens = rest.strip("_").split("_")
+        i = 0
+        ec_i = 1
+        arg_i = 1
+        pass_SMU = False
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "SMU":
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 3])
+                result["SMU"].append({f"ec{ec_i} type": tokens[i + 1],
+                                      f"ec{ec_i} channel": tokens[i + 2],
+                                      f"ec{ec_i} value": (float(match[1]), match[2])})
+                i += 4
+                ec_i += 1
+                continue
+            if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 2])
+                result["SMU"].append({f"ec{ec_i} type": tokens[i],
+                                      f"ec{ec_i} channel": tokens[i + 1],
+                                      f"ec{ec_i} value": (float(match[1]), match[2])})
+                i += 3
+                ec_i += 1
+                continue
+            if token == "arg":
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 1])
+                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
+                arg_i += 1
+                i += 2
+                pass_SMU = True
+                continue
+            if token:
+                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", token)
+                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
+                arg_i += 1
+            i += 1
+
+        return result
+
+    @classmethod
+    def parse_folder(cls, folder_path: str) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
+        """
+        檢測資料夾內所有檔案名稱是否符合指定格式
+
+        Returns:
+        - (valid_files, invalid_files) 元組
+          - valid_files: {Path物件: 解析後的元數據字典, ...}
+          - invalid_files: 不符合格式的檔案名稱列表
+        """
+        folder = Path(folder_path)
+
+        if not folder.exists():
+            raise FileNotFoundError(f"資料夾不存在: {folder_path}")
+
+        valid_files: Dict[Path, Dict[str, Any]] = {}
+        invalid_files: List[str] = []
+
+        for ext in cls.SUPPORTED_EXTENSIONS:
+            for file_path in folder.glob(f"*{ext}"):
+                try:
+                    meta = cls.parse_filename(file_path.name)
+                    valid_files[file_path] = meta
+                except ValueError:
+                    invalid_files.append(file_path.name)
+
+        return valid_files, invalid_files
+
+    def import_measurement_folder(self,
+                                  folder_path: str,
+                                  target_root: Optional[str] = None,
+                                  schema_file: str = "schema.sql",
+                                  operator: str = "T&P",
+                                  system_version: str = "CM300v1.0",
+                                  notes: str = "",) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
+        """
+        解析資料夾內檔案並寫入資料庫，完成後移動檔案到目標資料夾。
+
+        Returns:
+        - (valid_files, invalid_files)
+        """
+        folder = Path(folder_path)
+        valid_files, invalid_files = self.parse_folder(folder)
+
+        if target_root is None:
+            target_root_path = Path(self.db_path).parent / "MeasurementData"
+        else:
+            target_root_path = Path(target_root)
+
+        try:
+            self.create_database(schema_file)
+        except Exception:
+            pass
+        
+        measurement_datetime = folder.stat().st_mtime
+        move_path = []
+        try:
+            self.conn.execute("BEGIN")
+            for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
+                file_info = dict(file_info_raw)
+                session_name = folder.name + ("_rep" + file_info["repeat"] if file_info["repeat"] != "1" else "")
+                target_dir = (target_root_path/ 
+                              file_info["wafer"]/ 
+                              file_info["doe"]/ 
+                              f"die{file_info['die']}"/ 
+                              file_info["cage"]/ 
+                              file_info["device"]/ session_name)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                dst = target_dir / filepath.name
+
+                dut_id = self.insert_dut(wafer=file_info["wafer"],
+                                         doe=file_info["doe"],
+                                         die=file_info["die"],
+                                         cage=file_info["cage"],
+                                         device=file_info["device"],
+                                         commit=False)
+
+                session_id = self.insert_measurement_session(dut_id=dut_id,
+                                                             session_name=session_name,
+                                                             operator=operator,
+                                                             system_version=system_version,
+                                                             measurement_datetime=measurement_datetime,
+                                                             notes=notes,
+                                                             commit=False)
+
+                self.insert_experimental_conditions(session_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
+
+                data_id = self.insert_measurement_data(session_id=session_id,
+                                                       data_type=file_info["datatype"],
+                                                       created_time=filepath.stat().st_mtime,
+                                                       file_path=str(dst),
+                                                       commit=False)
+
+                smu = file_info.pop("SMU")
+                smu = {k: v for d in smu for k, v in d.items()}
+                arguments = file_info.pop("arguments")
+                arguments = {k: v for d in arguments for k, v in d.items()}
+                other: Dict[str, Any] = {}
+                if file_info["datatype"] in ["SPCM"]:
+                    other, _ = read_spectrum(filepath)
+
+                self.insert_data_info(data_id,
+                                      {"channel_in": file_info["ch_in"],
+                                       "channel_out": file_info["ch_out"],
+                                       "power": (file_info["power"], "dBm")}
+                                       | smu | arguments | other,
+                                      commit=False)
+
+                
+                move_path.append((filepath, dst))
+            self.conn.commit()
+            for src, dst in move_path:
+                shutil.move(str(src), str(dst))
+        except Exception:
+            if self.conn:
+                self.conn.rollback()
+            raise
+        print(f"匯入資料庫完成")
+        return valid_files, invalid_files
+ 

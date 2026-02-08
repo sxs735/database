@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS MeasurementSessions (
     operator TEXT,
     system_version TEXT,
     notes TEXT,
-    UNIQUE (DUT_id,session_name),
-    FOREIGN KEY (DUT_id) REFERENCES DUT(DUT_id) ON DELETE CASCADE);
+    FOREIGN KEY (DUT_id) REFERENCES DUT(DUT_id) ON DELETE CASCADE,
+    UNIQUE (DUT_id,session_name));
 
 CREATE INDEX IF NOT EXISTS idx_session_dut ON MeasurementSessions (DUT_id);
 CREATE INDEX IF NOT EXISTS idx_session_datetime ON MeasurementSessions (measurement_datetime);
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS ExperimentalConditions (
     value REAL NOT NULL,
     unit TEXT,
     FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
-    UNIQUE (session_id, key, unit) ON CONFLICT IGNORE);
+    UNIQUE (session_id, key, unit));
 
 CREATE INDEX IF NOT EXISTS idx_condition_session ON ExperimentalConditions (session_id);
 
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS DataInfo (
     value TEXT NOT NULL,
     unit TEXT,
     FOREIGN KEY (data_id) REFERENCES MeasurementData(data_id) ON DELETE CASCADE,
-    UNIQUE (data_id, key, unit) ON CONFLICT IGNORE);
+    UNIQUE (data_id, key, unit));
 
 CREATE INDEX IF NOT EXISTS idx_datainfo_data ON DataInfo (data_id);
 CREATE INDEX IF NOT EXISTS idx_datainfo_key ON DataInfo (key);
@@ -82,11 +82,26 @@ CREATE TABLE IF NOT EXISTS AnalysisRuns (
     analysis_id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL,
     analysis_type TEXT NOT NULL,   -- 'peak_detection'
+    analysis_index INTEGER NOT NULL,
     created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE);
+    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
+    UNIQUE (session_id, analysis_type, analysis_index));
 
 CREATE INDEX IF NOT EXISTS idx_analysis_session ON AnalysisRuns (session_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_type ON AnalysisRuns (analysis_type);
+
+-- =========================
+-- AnalysisInputs
+-- =========================
+CREATE TABLE IF NOT EXISTS AnalysisInputs (
+    analysis_id INTEGER NOT NULL,
+    data_id INTEGER NOT NULL,
+    PRIMARY KEY (analysis_id, data_id),
+    FOREIGN KEY (analysis_id) REFERENCES AnalysisRuns(analysis_id) ON DELETE CASCADE,
+    FOREIGN KEY (data_id) REFERENCES MeasurementData(data_id) ON DELETE CASCADE);
+
+CREATE INDEX IF NOT EXISTS idx_analysisinput_analysis ON AnalysisInputs (analysis_id);
+CREATE INDEX IF NOT EXISTS idx_analysisinput_data ON AnalysisInputs (data_id);
 
 -- =========================
 -- AnalysisFeatures
@@ -97,7 +112,7 @@ CREATE TABLE IF NOT EXISTS AnalysisFeatures (
     feature_type TEXT NOT NULL,     -- 'peak', 'valley'
     feature_index INTEGER NOT NULL, -- 0,1,2...
     FOREIGN KEY (analysis_id) REFERENCES AnalysisRuns(analysis_id) ON DELETE CASCADE,
-    UNIQUE (analysis_id, feature_type, feature_index) ON CONFLICT IGNORE);
+    UNIQUE (analysis_id, feature_type, feature_index));
 
 CREATE INDEX IF NOT EXISTS idx_feature_analysis ON AnalysisFeatures (analysis_id);
 CREATE INDEX IF NOT EXISTS idx_feature_type ON AnalysisFeatures (feature_type);
@@ -113,7 +128,7 @@ CREATE TABLE IF NOT EXISTS FeatureValues (
     unit TEXT,
 
     FOREIGN KEY (feature_id) REFERENCES AnalysisFeatures(feature_id) ON DELETE CASCADE,
-    UNIQUE (feature_id, key, unit) ON CONFLICT IGNORE);
+    UNIQUE (feature_id, key, unit));
 
 CREATE INDEX IF NOT EXISTS idx_value_feature ON FeatureValues (feature_id);
 CREATE INDEX IF NOT EXISTS idx_value_feature_key ON FeatureValues (feature_id, key);

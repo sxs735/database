@@ -77,6 +77,13 @@ def example_3_insert_analysis_data():
         analysis_id = db.insert_analysis_run(session_id=session_id,
                                              analysis_type="peak_detection")
         print(f"✓ 插入分析執行，ID: {analysis_id}")
+
+        # 將測量數據綁定為分析輸入
+        data_list = db.get_measurement_data_by_session(session_id)
+        if data_list:
+            data_ids = [item['data_id'] for item in data_list]
+            db.insert_analysis_inputs(analysis_id, data_ids)
+            print(f"✓ 綁定 {len(data_ids)} 筆測量數據為分析輸入")
         
         # 插入檢測到的峰值
         for i in range(3):  # 假設檢測到 3 個峰值
@@ -177,6 +184,10 @@ def example_5_query_full_session():
             print(f"\n  分析結果:")
             for analysis in full_info['analysis_runs']:
                 print(f"    - 分析類型: {analysis['analysis_type']}")
+                if analysis['inputs']:
+                    print(f"      使用測量數據:")
+                    for data in analysis['inputs']:
+                        print(f"        - {data['data_type']}: {data['file_path']}")
                 for feature in analysis['features']:
                     print(f"      峰值 {feature['feature_index']}:")
                     for key, (value, unit) in feature['values'].items():
