@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import re
 import shutil
 import sqlite3
@@ -16,11 +17,12 @@ class DatabaseAPI:
                               ^(?P<datatype>[^_]+)
                               _(?P<wafer>[^_]+)
                               _(?P<doe>[^_]+)
-                              _die(?P<die>\d+)
                               _(?P<cage>[^_]+)
-                              _(?P<device>[^_]+)
+                              _die(?P<die>\d+)
+                              _(?P<subdie>\d+)
                               _(?P<temperature>-?\d+)C
-                              _rep(?P<repeat>\d+)
+                              _\#(?P<repeat>\d+)
+                              _(?P<device>[^_]+)
                               _ch_(?P<ch_in>\d+)
                               _(?P<ch_out>\d+)
                               _(?P<power>-?\d+)dBm
@@ -222,7 +224,7 @@ class DatabaseAPI:
         if created_time is None:
             created_time = datetime.now().replace(microsecond=0)
         else:
-            created_time = datetime.fromtimestamp(created_time)
+            created_time = datetime.fromtimestamp(created_time).replace(microsecond=0)
             
         cursor = self.conn.execute("""INSERT OR IGNORE INTO MeasurementData 
                                    (session_id, data_type, file_path, created_time)
@@ -776,6 +778,14 @@ class DatabaseAPI:
 
         return valid_files, invalid_files
 
+    @classmethod
+    def move_file(cls, src_dst):
+        src, dst = src_dst
+        try:
+            src.rename(dst)  # 同磁碟機非常快
+        except OSError:
+            shutil.move(str(src), str(dst))  # 跨磁碟機降級
+
     def import_measurement_folder(self,
                                   folder_path: str,
                                   target_root: Optional[str] = None,
@@ -808,13 +818,13 @@ class DatabaseAPI:
             self.conn.execute("BEGIN")
             for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
                 file_info = dict(file_info_raw)
-                session_name = folder.name + ("_rep" + file_info["repeat"] if file_info["repeat"] != "1" else "")
+                session_name = folder.name + (r"_#" + file_info["repeat"] if file_info["repeat"] != "1" else "")
                 target_dir = (target_root_path/ 
                               file_info["wafer"]/ 
                               file_info["doe"]/ 
-                              f"die{file_info['die']}"/ 
-                              file_info["cage"]/ 
-                              file_info["device"]/ session_name)
+                              file_info["cage"]/
+                              file_info["device"]/
+                              f"die{file_info['die']}"/ session_name)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
 
@@ -859,8 +869,13 @@ class DatabaseAPI:
                 
                 move_path.append((filepath, dst))
             self.conn.commit()
-            for src, dst in move_path:
-                shutil.move(str(src), str(dst))
+            # for src, dst in tqdm(move_path, desc="Moving", unit="file"):
+            #     shutil.move(str(src), str(dst))
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(tqdm(executor.map(self.move_file, move_path), 
+                        total=len(move_path), 
+                        desc="Moving", 
+                        unit="file"))
         except Exception:
             if self.conn:
                 self.conn.rollback()
