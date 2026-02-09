@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import re
 import shutil
 import sqlite3
@@ -777,6 +778,14 @@ class DatabaseAPI:
 
         return valid_files, invalid_files
 
+    @classmethod
+    def move_file(cls, src_dst):
+        src, dst = src_dst
+        try:
+            src.rename(dst)  # 同磁碟機非常快
+        except OSError:
+            shutil.move(str(src), str(dst))  # 跨磁碟機降級
+
     def import_measurement_folder(self,
                                   folder_path: str,
                                   target_root: Optional[str] = None,
@@ -813,9 +822,9 @@ class DatabaseAPI:
                 target_dir = (target_root_path/ 
                               file_info["wafer"]/ 
                               file_info["doe"]/ 
-                              f"die{file_info['die']}"/ 
-                              file_info["cage"]/ 
-                              file_info["device"]/ session_name)
+                              file_info["cage"]/
+                              file_info["device"]/
+                              f"die{file_info['die']}"/ session_name)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
 
@@ -860,8 +869,13 @@ class DatabaseAPI:
                 
                 move_path.append((filepath, dst))
             self.conn.commit()
-            for src, dst in tqdm(move_path, desc="Moving", unit="file"):
-                shutil.move(str(src), str(dst))
+            # for src, dst in tqdm(move_path, desc="Moving", unit="file"):
+            #     shutil.move(str(src), str(dst))
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(tqdm(executor.map(self.move_file, move_path), 
+                        total=len(move_path), 
+                        desc="Moving", 
+                        unit="file"))
         except Exception:
             if self.conn:
                 self.conn.rollback()

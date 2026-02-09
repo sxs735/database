@@ -6,7 +6,7 @@ from scipy.signal import find_peaks,peak_widths,peak_prominences
 from analysis import read_spectrum
 from tqdm import tqdm
 
-folder_path = Path(r"D:\processing\260206_mapping")
+folder_path = Path(r"D:\processing\260205_mapping")
 db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
@@ -31,16 +31,16 @@ with DatabaseAPI(db_path) as db:
             head,data = read_spectrum(path)
             x = data[:, 0]
             y = data[:, 3] - data[:, 1]
-            bestfit = np.polynomial.Polynomial.fit(x, y, 6)
-            y_level = y - bestfit(x)
-            prominence = -(y_level.min() + y_level.max())/3 
-            valley_idx, props = find_peaks(-y_level,prominence=prominence,distance=5)
+            baseline = np.polynomial.Polynomial.fit(x, y, 6)
+            loss_level = y - baseline(x)
+            prominence = -(loss_level.min() + loss_level.max())/3 
+            valley_idx, props = find_peaks(-loss_level,prominence=prominence,distance=5)
             valley_x = x[valley_idx]
-            valley_y = y_level[valley_idx]
+            valley_y = loss_level[valley_idx]
             FSR = valley_x[1:]-valley_x[:-1]
             FSR = np.vstack((np.r_[FSR,np.nan],np.r_[np.nan,FSR]))
             FSR = np.nanmax(FSR,axis = 0)
-            Ty = 10**(y_level/10)
+            Ty = 10**(loss_level/10)
             FWHM = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(x))
             delta_T = peak_prominences(-Ty, valley_idx)[0]
             Q = delta_T/FWHM*1000
@@ -71,26 +71,28 @@ with DatabaseAPI(db_path) as db:
 import matplotlib.pyplot as plt
 %matplotlib qt
 with DatabaseAPI(db_path) as db:
-    info = db.get_measurement_data_by_session(session_id = 12, data_type="SPCM")
+    info = db.get_measurement_data_by_session(session_id = 1, data_type="SPCM")
     path = info[0]['file_path']
+
     head,data = read_spectrum(path)
-    x = data[:, 0]
-    y = data[:, 3] - data[:, 1]
-    bestfit = np.polynomial.Polynomial.fit(x, y, 6)
-    y_level = y - bestfit(x)
-    prominence = -(y_level.min() + y_level.max())/3 
-    valley_idx, props = find_peaks(-y_level,prominence=prominence,distance=5)
-    valley_x = x[valley_idx]
-    valley_y = y_level[valley_idx]
+    wavelength = data[:, 0]
+    loss = data[:, 3] - data[:, 1]
+    baseline = np.polynomial.Polynomial.fit(wavelength, loss, 6)
+    loss_level = loss - baseline(wavelength)
+    prominence = -(loss_level.min() + loss_level.max())/3 
+    valley_idx, props = find_peaks(-loss_level,prominence=prominence,distance=5)
+    valley_x = wavelength[valley_idx]
+    valley_y = loss_level[valley_idx]
     FSR = valley_x[1:]-valley_x[:-1]
     FSR = np.vstack((np.r_[FSR,np.nan],np.r_[np.nan,FSR]))
     FSR = np.nanmax(FSR,axis = 0)
-    Ty = 10**(y_level/10)
-    FWHM = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(x))
-    delta_T = peak_prominences(-Ty, valley_idx)[0]
-    Q = delta_T/FWHM*1000
+    ER = -peak_prominences(-loss_level, valley_idx)[0]
+    Ty = 10**(loss_level/10)
+    FWHM = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(wavelength))
+    
+    Q = valley_x/FWHM
 
-    plt.plot(x,y_level)
+    plt.plot(wavelength,loss_level)
     plt.plot(valley_x,valley_y,'x')
     plt.show()
 # %%
