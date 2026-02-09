@@ -6,8 +6,8 @@ from scipy.signal import find_peaks,peak_widths,peak_prominences
 from analysis import read_spectrum
 from tqdm import tqdm
 
-folder_path = Path(r"D:\processing\260205_mapping")
-db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
+folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3dB\20260202")
+db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
     db.import_measurement_folder(folder_path,schema_file="schema.sql")
