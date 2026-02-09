@@ -16,11 +16,12 @@ class DatabaseAPI:
                               ^(?P<datatype>[^_]+)
                               _(?P<wafer>[^_]+)
                               _(?P<doe>[^_]+)
-                              _die(?P<die>\d+)
                               _(?P<cage>[^_]+)
-                              _(?P<device>[^_]+)
+                              _die(?P<die>\d+)
+                              _(?P<subdie>\d+)
                               _(?P<temperature>-?\d+)C
-                              _rep(?P<repeat>\d+)
+                              _\#(?P<repeat>\d+)
+                              _(?P<device>[^_]+)
                               _ch_(?P<ch_in>\d+)
                               _(?P<ch_out>\d+)
                               _(?P<power>-?\d+)dBm
@@ -222,7 +223,7 @@ class DatabaseAPI:
         if created_time is None:
             created_time = datetime.now().replace(microsecond=0)
         else:
-            created_time = datetime.fromtimestamp(created_time)
+            created_time = datetime.fromtimestamp(created_time).replace(microsecond=0)
             
         cursor = self.conn.execute("""INSERT OR IGNORE INTO MeasurementData 
                                    (session_id, data_type, file_path, created_time)
@@ -808,7 +809,7 @@ class DatabaseAPI:
             self.conn.execute("BEGIN")
             for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
                 file_info = dict(file_info_raw)
-                session_name = folder.name + ("_rep" + file_info["repeat"] if file_info["repeat"] != "1" else "")
+                session_name = folder.name + (r"_#" + file_info["repeat"] if file_info["repeat"] != "1" else "")
                 target_dir = (target_root_path/ 
                               file_info["wafer"]/ 
                               file_info["doe"]/ 
@@ -859,7 +860,7 @@ class DatabaseAPI:
                 
                 move_path.append((filepath, dst))
             self.conn.commit()
-            for src, dst in move_path:
+            for src, dst in tqdm(move_path, desc="Moving", unit="file"):
                 shutil.move(str(src), str(dst))
         except Exception:
             if self.conn:

@@ -6,13 +6,14 @@ from scipy.signal import find_peaks,peak_widths,peak_prominences
 from analysis import read_spectrum
 from tqdm import tqdm
 
-folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3dB\20260202")
-db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "Measurement.db"
+folder_path = Path(r"D:\processing\260206_mapping")
+db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
-    #db.import_measurement_folder(folder_path,schema_file="schema.sql")
+    db.import_measurement_folder(folder_path,schema_file="schema.sql")
     #output_path = db.export_all_tables_to_xlsx(folder_path.parent / "database_export.xlsx")
-
+#%%
+with DatabaseAPI(db_path) as db:
     sql = '''
     SELECT s.session_id,s.DUT_id,s.session_name,s.measurement_datetime
     FROM MeasurementSessions s
