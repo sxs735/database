@@ -3,11 +3,11 @@ from pathlib import Path
 from database_api import DatabaseAPI
 import numpy as np
 from scipy.signal import find_peaks,peak_widths,peak_prominences
-from analysis import read_spectrum
+from analysis import *
 from tqdm import tqdm
 
 folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3dB\20260202")
-db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "DataBase.db"
+db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
     db.import_measurement_folder(folder_path,schema_file="schema.sql")
@@ -38,13 +38,13 @@ with DatabaseAPI(db_path) as db:
             valley_idx, props = find_peaks(-loss_level,prominence=prominence,distance=5)
             valley_x = x[valley_idx]
             valley_y = loss_level[valley_idx]
-            FSR = valley_x[1:]-valley_x[:-1]
-            FSR = np.vstack((np.r_[FSR,np.nan],np.r_[np.nan,FSR]))
-            FSR = np.nanmax(FSR,axis = 0)
+            FSRnm = valley_x[1:]-valley_x[:-1]
+            FSRnm = np.vstack((np.r_[FSRnm,np.nan],np.r_[np.nan,FSRnm]))
+            FSRnm = np.nanmax(FSRnm,axis = 0)
             Ty = 10**(loss_level/10)
-            FWHM = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(x))
+            FWHMnm = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(x))
             delta_T = peak_prominences(-Ty, valley_idx)[0]
-            Q = delta_T/FWHM*1000
+            Q = delta_T/FWHMnm*1000
 
             if len(valley_idx) <= 6:
                 analysis_id = db.insert_analysis_run(session_id = session_id,
@@ -56,8 +56,8 @@ with DatabaseAPI(db_path) as db:
                 for i in range(len(valley_idx)):
                     feature_id = db.insert_analysis_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_index=i)
                     db.insert_feature_values(feature_id, {'valley wavelength': (valley_x[i],'nm'),
-                                                          'FSR':(FSR[i],'nm'),
-                                                          'FWHM':(FWHM[i],'nm'),
+                                                          'FSR':(FSRnm[i],'nm'),
+                                                          'FWHM':(FWHMnm[i],'nm'),
                                                           'Q factor':(Q[i],'')})
     db.conn.commit()
 
@@ -75,28 +75,12 @@ with DatabaseAPI(db_path) as db:
 import matplotlib.pyplot as plt
 %matplotlib qt
 with DatabaseAPI(db_path) as db:
-    info = db.get_measurement_data_by_session(session_id = 1, data_type="SPCM")
+    info = db.get_measurement_data_by_session(session_id = 1, data_type="SSRF")
     path = info[0]['file_path']
-
-    head,data = read_spectrum(path)
-    wavelength = data[:, 0]
-    loss = data[:, 3] - data[:, 1]
-    baseline = np.polynomial.Polynomial.fit(wavelength, loss, 6)
-    loss_level = loss - baseline(wavelength)
-    prominence = -(loss_level.min() + loss_level.max())/3 
-    valley_idx, props = find_peaks(-loss_level,prominence=prominence,distance=5)
-    valley_x = wavelength[valley_idx]
-    valley_y = loss_level[valley_idx]
-    FSR = valley_x[1:]-valley_x[:-1]
-    FSR = np.vstack((np.r_[FSR,np.nan],np.r_[np.nan,FSR]))
-    FSR = np.nanmax(FSR,axis = 0)
-    ER = -peak_prominences(-loss_level, valley_idx)[0]
-    Ty = 10**(loss_level/10)
-    FWHM = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(wavelength))
-    
-    Q = valley_x/FWHM
-
-    plt.plot(wavelength,loss_level)
-    plt.plot(valley_x,valley_y,'x')
-    plt.show()
+  
+head, data = read_ssrf(path)
+x = data[:,0].real
+s21 = 20*np.log10(np.abs(data[:,2]))
+plt.plot(x,s21)
+plt.show()
 # %%
