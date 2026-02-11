@@ -1,6 +1,7 @@
 import csv
 import numpy as np
-from scipy.signal import find_peaks,peak_widths,peak_prominences
+import inspect
+from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
 
 def tofloat(value):
     try:
@@ -84,7 +85,24 @@ def read_ssrf(path):
         # 組合成輸出格式（使用 complex128 類型）
         result = np.column_stack([freq, s11, s21, s12, s22])
     
-    return head, result
+    return result
+
+def read_dcvi(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for i, row in enumerate(reader):
+            if i==0:
+                continue
+            elif i>=1:
+                data = row
+            else:
+                break
+        data = {'channel':int(data[0]),
+                'set mode':data[1],
+                'set value': (tofloat(data[2]), 'V' if data[1]=="VOLT" else 'A'),
+                'measured voltage': (tofloat(data[3]), 'V'),
+                'measured current': (tofloat(data[4]), 'A')}
+        return data
 
 def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order=3):
     """
@@ -105,8 +123,12 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     
     Returns:
     --------
-    dict : 包含各種分析參數的字典
+    tuple : (result_dict, algorithm_name, version)
+        result_dict  -> 包含 FSR、FWHM、Q factor 等分析參數的字典
+        algorithm_name -> 字串，指出所使用的分析函數名稱
+        version -> 字串，標記分析演算法版本
     """
+    version = "1.0.0"
     # 檢查輸入數據
     if len(wavelength) != len(loss):
         raise ValueError("wavelength 和 loss 的長度必須相同")
@@ -138,7 +160,7 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     
     wavelength_x = wavelength[valley_idx]
     frequency_x = frequency[valley_idx]
-    loss_x = loss_level[valley_idx]
+    valley_loss = loss_level[valley_idx]
     
     # 計算 FSR (nm)
     FSRnm = wavelength_x[1:] - wavelength_x[:-1]
@@ -163,11 +185,62 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     FWHMGHz = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * frequency_spacing
     Q = wavelength_x / FWHMnm
     
-    return {'Extinction Ratio': (ER, 'dB'),
+    return ({'Extinction Ratio': (ER, 'dB'),
             'FSRnm': (FSRnm.tolist(), 'nm'),
             'FSRGHz': (FSRGHz.tolist(), 'GHz'),
             'FWHMnm': (FWHMnm.tolist(), 'nm'),
             'FWHMGHz': (FWHMGHz.tolist(), 'GHz'),
             'Q factor': (Q.tolist(), ''),
             'valley_wavelength': (wavelength_x.tolist(), 'nm'),
-            'valley_frequency': (frequency_x.tolist(), 'THz')}
+            'valley_frequency': (frequency_x.tolist(), 'THz')},
+            inspect.currentframe().f_code.co_name, 
+            version)
+
+def MRM_SSRF_analysis(frequency,
+                      s21,
+                      reference_frequency: float = 0.5,
+                      drop_levels= 3,
+                      smooth_window: int = 0,
+                      polyorder: int = 2):
+    """依據 S21 曲線估算小信號頻寬。
+
+    Parameters
+    ----------
+    frequency : array-like
+        頻率軸 (GHz)。演算法假設資料點已依頻率排序。
+    s21 : array-like
+        對應的 S21 幅度 (dB)。
+    reference_frequency : float, optional
+        作為 0 dB 參考點的頻率，預設 0.5 GHz。
+    drop_levels : float, optional
+        相對參考點欲偵測的衰減量，預設 3 dB。
+    smooth_window : int, optional
+        Savitzky-Golay 平滑視窗長度。小於 3 時跳過平滑。
+    polyorder : int, optional
+        Savitzky-Golay 多項式階數，需小於 smooth_window。
+
+    Returns
+    -------
+    tuple
+        (結果字典, 函式名稱, 版本)。
+    """
+    # s21 = 20*np.log10(np.abs(data[:,2]))
+    version = "1.0.0"
+    if smooth_window >= 3 and polyorder < smooth_window:
+        smooth_s21 = savgol_filter(s21, smooth_window, polyorder)
+    else:
+        smooth_s21 = s21
+
+    ref_idx = np.argmin(np.abs(frequency - reference_frequency))
+    ref_loss = smooth_s21[ref_idx]
+
+    between = ((smooth_s21[:-1]-(ref_loss-drop_levels))*(smooth_s21[1:]-(ref_loss-drop_levels))<=0) & (smooth_s21[:-1] != smooth_s21[1:])
+    inter_point = frequency[:-1] + ((ref_loss-drop_levels) - smooth_s21[:-1]) * (frequency[1:] - frequency[:-1]) / (smooth_s21[1:] - smooth_s21[:-1])
+    frequency_x2 = inter_point[between][0]
+    bandwidth = frequency_x2 - reference_frequency
+
+    result = {'bandwidth': (bandwidth, 'GHz')}
+
+    return (result,
+            inspect.currentframe().f_code.co_name,
+            version)

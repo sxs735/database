@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS AnalysisRuns (
     session_id INTEGER NOT NULL,
     analysis_type TEXT NOT NULL,   -- 'peak_detection'
     analysis_index INTEGER NOT NULL,
+    algorithm TEXT NOT NULL,
+    version TEXT NOT NULL,
     created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
     UNIQUE (session_id, analysis_type, analysis_index));

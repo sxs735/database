@@ -66,10 +66,21 @@ with DatabaseAPI("Measurement.db") as db:
     session_id = db.insert_measurement_session(dut_id, session_name="SPCM_20260205")
     data_id = db.insert_measurement_data(session_id, "SPCM", ".../file.csv")
     db.insert_experimental_conditions(session_id, {"temperature": (25, "°C")})
-    db.insert_analysis_run(session_id, "basic_spectrum_analysis", analysis_index=0)
+   db.insert_analysis_run(session_id,
+                     "basic_spectrum_analysis",
+                     analysis_index=0,
+                     algorithm="valley_scan",
+                     version="1.0.0")
 ```
 
 Query helpers include `get_session_full_info()`, `get_analysis_input_data()`, and `search_features_by_value()`.
+
+To evolve the schema safely, leverage `add_column()` which skips work if the column already exists:
+
+```python
+with DatabaseAPI("Measurement.db") as db:
+   db.add_column("AnalysisRuns", "version", "TEXT NOT NULL DEFAULT '1.0.0'")
+```
 
 ## Running the Example Workflow
 

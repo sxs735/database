@@ -1,0 +1,3 @@
+channel,set mode,set value,measured voltage,measured current
+1,VOLT,0,0,0
+2,VOLT,1,0,0

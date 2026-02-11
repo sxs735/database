@@ -6,13 +6,14 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
-from analysis import read_spectrum
+from analysis import *
 from tqdm import tqdm
 
 class DatabaseAPI:
     """基於 SQLite 的資料庫 API，用於管理光譜測量數據"""
 
     SUPPORTED_EXTENSIONS = {".csv", ".txt", ".s2p"}
+    IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     MAIN_PATTERN = re.compile(r"""
                               ^(?P<datatype>[^_]+)
                               _(?P<wafer>[^_]+)
@@ -59,6 +60,12 @@ class DatabaseAPI:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager 支援"""
         self.close()
+    
+    @staticmethod
+    def _validate_identifier(name: str, kind: str) -> None:
+        """確保資料表或欄位名稱為合法的 SQL 標識符"""
+        if not DatabaseAPI.IDENTIFIER_PATTERN.match(name):
+            raise ValueError(f"Invalid {kind}: {name}. Use letters, numbers, and underscores only, starting with a letter or underscore.")
    
     # =========================
     # 1. 創建資料庫
@@ -267,7 +274,9 @@ class DatabaseAPI:
     def insert_analysis_run(self,session_id: int,
                             analysis_type: str,
                             analysis_index: int,
-                            created_time: Optional[datetime] = None, 
+                            algorithm: Optional[str] = None,
+                            version: Optional[str] = None,
+                            created_time: Optional[datetime] = None,
                             commit: bool = True) -> int:
         """
         插入分析執行記錄
@@ -276,6 +285,8 @@ class DatabaseAPI:
             session_id: 會話 ID
             analysis_type: 分析類型（如 'peak_detection'）
             analysis_index: 分析索引
+            algorithm: 具體演算法名稱
+            version: 演算法版本
             created_time: 創建時間（默認為當前時間）
             
         Returns:
@@ -283,14 +294,20 @@ class DatabaseAPI:
         """
         if created_time is None:
             created_time = datetime.now().replace(microsecond=0)
-            
+        if algorithm is None:
+            algorithm = "unspecified"
+        if version is None:
+            version = "1.0.0"
+
         cursor = self.conn.execute("""INSERT INTO AnalysisRuns 
-                                   (session_id, analysis_type, analysis_index, created_time)
-                                   VALUES (?, ?, ?, ?)
+                                   (session_id, analysis_type, analysis_index, algorithm, version, created_time)
+                                   VALUES (?, ?, ?, ?, ?, ?)
                                    ON CONFLICT (session_id, analysis_type, analysis_index) DO UPDATE SET
+                                   algorithm = excluded.algorithm,
+                                   version = excluded.version,
                                    created_time = excluded.created_time
                                    RETURNING analysis_id""",
-                                   (session_id, analysis_type, analysis_index, created_time))
+                                   (session_id, analysis_type, analysis_index, algorithm, version, created_time))
         row = cursor.fetchone()
         if commit:
             self.conn.commit()
@@ -669,6 +686,34 @@ class DatabaseAPI:
                   'MeasurementData', 'DataInfo', 'AnalysisRuns', 'AnalysisInputs', 'AnalysisFeatures', 'FeatureValues']
         return {table: self.get_table_count(table) for table in tables}
 
+    def add_column(self,
+                   table_name: str,
+                   column_name: str,
+                   column_definition: str,
+                   if_not_exists: bool = True,
+                   commit: bool = True) -> bool:
+        """在既有資料表中新增欄位。"""
+        if not self.conn:
+            raise RuntimeError("Database connection is not established. Use the context manager or call connect().")
+
+        self._validate_identifier(table_name, "table name")
+        self._validate_identifier(column_name, "column name")
+
+        definition = column_definition.strip()
+        if not definition:
+            raise ValueError("column_definition must be a non-empty string, e.g. 'TEXT NOT NULL DEFAULT \"1\"'.")
+
+        if if_not_exists:
+            existing_columns = {row["name"] for row in self.conn.execute(f'PRAGMA table_info("{table_name}")')}
+            if column_name in existing_columns:
+                return False
+
+        self.conn.execute(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {definition}')
+        
+        if commit:
+            self.conn.commit()
+        return True
+
     def export_all_tables_to_xlsx(self, output_path: str = "database_export.xlsx") -> str:
         """
         將整個資料庫所有表輸出成 xlsx 檔案
@@ -721,17 +766,17 @@ class DatabaseAPI:
             token = tokens[i]
             if token == "SMU":
                 match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 3])
-                result["SMU"].append({f"ec{ec_i} type": tokens[i + 1],
-                                      f"ec{ec_i} channel": tokens[i + 2],
-                                      f"ec{ec_i} value": (float(match[1]), match[2])})
+                result["SMU"].append({f"ec{tokens[i + 2]} type": tokens[i + 1],
+                                      f"ec{tokens[i + 2]} channel": tokens[i + 2],
+                                      f"ec{tokens[i + 2]} value": (float(match[1]), match[2])})
                 i += 4
                 ec_i += 1
                 continue
             if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
                 match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 2])
-                result["SMU"].append({f"ec{ec_i} type": tokens[i],
-                                      f"ec{ec_i} channel": tokens[i + 1],
-                                      f"ec{ec_i} value": (float(match[1]), match[2])})
+                result["SMU"].append({f"ec{tokens[i + 1]} type": tokens[i],
+                                      f"ec{tokens[i + 1]} channel": tokens[i + 1],
+                                      f"ec{tokens[i + 1]} value": (float(match[1]), match[2])})
                 i += 3
                 ec_i += 1
                 continue
@@ -858,24 +903,29 @@ class DatabaseAPI:
                 other: Dict[str, Any] = {}
                 if file_info["datatype"] in ["SPCM"]:
                     other, _ = read_spectrum(filepath)
-
-                self.insert_data_info(data_id,
-                                      {"channel_in": file_info["ch_in"],
-                                       "channel_out": file_info["ch_out"],
-                                       "power": (file_info["power"], "dBm")}
-                                       | smu | arguments | other,
-                                      commit=False)
+                    info_dict = {"channel_in": file_info["ch_in"],
+                                 "channel_out": file_info["ch_out"],
+                                 "power": (file_info["power"], "dBm")}| smu | arguments | other
+                elif file_info["datatype"] in ["DCVI"]:
+                    dcvi = read_dcvi(filepath)
+                    ec_type = smu.get(f'ec{dcvi["channel"]} type', "unknown")
+                    info_dict = {'channel': dcvi['channel'],
+                                 'ec type': ec_type,
+                                 'set mode': dcvi['set mode'],
+                                 'set value': dcvi['set value']}
+                #print(info_dict)
+                self.insert_data_info(data_id,info_dict,commit=False)
 
                 
                 move_path.append((filepath, dst))
             self.conn.commit()
             # for src, dst in tqdm(move_path, desc="Moving", unit="file"):
             #     shutil.move(str(src), str(dst))
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                list(tqdm(executor.map(self.move_file, move_path), 
-                        total=len(move_path), 
-                        desc="Moving", 
-                        unit="file"))
+            # with ThreadPoolExecutor(max_workers=4) as executor:
+            #     list(tqdm(executor.map(self.move_file, move_path), 
+            #             total=len(move_path), 
+            #             desc="Moving", 
+            #             unit="file"))
         except Exception:
             if self.conn:
                 self.conn.rollback()

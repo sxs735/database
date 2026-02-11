@@ -2,12 +2,12 @@
 from pathlib import Path
 from database_api import DatabaseAPI
 import numpy as np
-from scipy.signal import find_peaks,peak_widths,peak_prominences
+from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
 from analysis import *
 from tqdm import tqdm
 
 folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3dB\20260202")
-db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
+db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
     db.import_measurement_folder(folder_path,schema_file="schema.sql")
@@ -48,8 +48,10 @@ with DatabaseAPI(db_path) as db:
 
             if len(valley_idx) <= 6:
                 analysis_id = db.insert_analysis_run(session_id = session_id,
-                                                     analysis_type = f'basic_spectrum_analysis',
+                                                     analysis_type = 'basic_spectrum_analysis',
                                                      analysis_index = analysis_idx,
+                                                     algorithm = "valley_scan",
+                                                     version = "1.0.0",
                                                      commit=False)
                 
                 db.insert_analysis_input(analysis_id, info["data_id"], commit=False)
@@ -62,25 +64,22 @@ with DatabaseAPI(db_path) as db:
     db.conn.commit()
 
 # %%
-with DatabaseAPI(db_path) as db:
-    sql = '''
-    SELECT a.analysis_id
-    FROM AnalysisRuns a;'''
-    result = db.query(sql)
-    output_path = db.export_all_tables_to_xlsx(folder_path.parent / "database_export.xlsx")
-    # for analysis_id in [res['analysis_id'] for res in result]:
-    #     db.delete_analysis_run(analysis_id)
-
-# %%
 import matplotlib.pyplot as plt
+import time
 %matplotlib qt
 with DatabaseAPI(db_path) as db:
-    info = db.get_measurement_data_by_session(session_id = 1, data_type="SSRF")
-    path = info[0]['file_path']
-  
-head, data = read_ssrf(path)
-x = data[:,0].real
-s21 = 20*np.log10(np.abs(data[:,2]))
-plt.plot(x,s21)
-plt.show()
+    spcm = db.get_measurement_data_by_session(session_id = 4, data_type="SPCM")
+    for spcm_info in spcm:
+        data_id = spcm_info['data_id']
+        data_info = db.get_data_info_by_data(data_id=data_id)
+        spcm_dict = {info['key']: info['value'] for info in data_info}
+    dcvi = db.get_measurement_data_by_session(session_id = 4, data_type="DCVI")
+    for dcvi_info in dcvi:
+        data_id = dcvi_info['data_id']
+        data_info = db.get_data_info_by_data(data_id=data_id)
+        dcvi_dict = {info['key']: info['value'] for info in data_info}
+
+    #dcvi = db.get_measurement_data_by_session(session_id = 4, data_type="DCVI")
+    #dcvi_info = db.get_data_info_by_data(data_id=spcm[0]['data_id'])
+    
 # %%

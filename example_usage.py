@@ -75,7 +75,10 @@ def example_3_insert_analysis_data():
         
         # 創建分析執行
         analysis_id = db.insert_analysis_run(session_id=session_id,
-                                             analysis_type="peak_detection")
+                             analysis_type="peak_detection",
+                             analysis_index=0,
+                             algorithm="peak_detector",
+                             version="1.0.0")
         print(f"✓ 插入分析執行，ID: {analysis_id}")
 
         # 將測量數據綁定為分析輸入
@@ -324,6 +327,22 @@ def example_10_export_xlsx():
     print()
 
 
+def example_11_add_column():
+    """範例 11: 新增資料表欄位"""
+    print("=" * 50)
+    print("範例 11: 新增欄位")
+    print("=" * 50)
+
+    with DatabaseAPI("example.db") as db:
+        added = db.add_column("AnalysisRuns", "version", "TEXT NOT NULL DEFAULT '1.0.0'")
+        if added:
+            print("✓ 已為 AnalysisRuns 新增 version 欄位")
+        else:
+            print("✓ version 欄位已存在，無需重複新增")
+
+    print()
+
+
 def main():
     """執行所有範例"""
     print("\n" + "=" * 50)
@@ -345,6 +364,7 @@ def main():
     example_9_custom_query()
     # 需要安裝 pandas/openpyxl 才能執行
     example_10_export_xlsx()
+    example_11_add_column()
     
     # 刪除數據（已註解）
     example_7_delete_data()
