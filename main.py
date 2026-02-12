@@ -68,18 +68,38 @@ import matplotlib.pyplot as plt
 import time
 %matplotlib qt
 with DatabaseAPI(db_path) as db:
-    spcm = db.get_measurement_data_by_session(session_id = 4, data_type="SPCM")
-    for spcm_info in spcm:
+    spcm = {}
+    spcm_data = db.get_measurement_data_by_session(session_id = 4, data_type="SPCM")
+    for spcm_info in spcm_data:
         data_id = spcm_info['data_id']
         data_info = db.get_data_info_by_data(data_id=data_id)
-        spcm_dict = {info['key']: info['value'] for info in data_info}
-    dcvi = db.get_measurement_data_by_session(session_id = 4, data_type="DCVI")
-    for dcvi_info in dcvi:
-        data_id = dcvi_info['data_id']
+        spcm[data_id] = {info['key']: info['value'] for info in data_info}
+    #modulated_value = [v['ec1 value'] for v in spcm.values()]
+    dciv = {}
+    dciv_data = db.get_measurement_data_by_session(session_id = 4, data_type="DCIV")
+    for dciv_info in dciv_data:
+        data_id = dciv_info['data_id']
         data_info = db.get_data_info_by_data(data_id=data_id)
-        dcvi_dict = {info['key']: info['value'] for info in data_info}
+        dciv[data_id] = {info['key']: info['value'] for info in data_info}
+    print(dciv)
 
-    #dcvi = db.get_measurement_data_by_session(session_id = 4, data_type="DCVI")
-    #dcvi_info = db.get_data_info_by_data(data_id=spcm[0]['data_id'])
+for data_id, info in spcm.items():
+    print(f"Data ID: {data_id}")
+    print([v for k, v in info.items() if 'ec' in k and 'value' in k]) 
+    
+#%%    
+    cmd = '''
+    SELECT md.data_id FROM MeasurementData md
+    JOIN DataInfo di ON md.data_id = di.data_id
+    WHERE md.session_id = 1
+    AND md.data_type = 'SPCM'
+    AND (
+    (di.key = 'ec1 type'    AND di.value = 'pn') OR
+    (di.key = 'ec1 channel' AND di.value = '1')  OR
+    (di.key = 'ec1 value'   AND di.value = -900.0)
+    )
+    GROUP BY md.data_id
+    HAVING COUNT(DISTINCT di.key) = 3;'''
+    a = db.query(cmd)
     
 # %%

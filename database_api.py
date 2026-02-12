@@ -895,25 +895,24 @@ class DatabaseAPI:
                                                        created_time=filepath.stat().st_mtime,
                                                        file_path=str(dst),
                                                        commit=False)
-
+                opt = {"channel_in": file_info["ch_in"],
+                       "channel_out": file_info["ch_out"],
+                       "power": (file_info["power"], "dBm")}
                 smu = file_info.pop("SMU")
                 smu = {k: v for d in smu for k, v in d.items()}
                 arguments = file_info.pop("arguments")
                 arguments = {k: v for d in arguments for k, v in d.items()}
-                other: Dict[str, Any] = {}
                 if file_info["datatype"] in ["SPCM"]:
                     other, _ = read_spectrum(filepath)
-                    info_dict = {"channel_in": file_info["ch_in"],
-                                 "channel_out": file_info["ch_out"],
-                                 "power": (file_info["power"], "dBm")}| smu | arguments | other
-                elif file_info["datatype"] in ["DCVI"]:
-                    dcvi = read_dcvi(filepath)
-                    ec_type = smu.get(f'ec{dcvi["channel"]} type', "unknown")
-                    info_dict = {'channel': dcvi['channel'],
-                                 'ec type': ec_type,
-                                 'set mode': dcvi['set mode'],
-                                 'set value': dcvi['set value']}
-                #print(info_dict)
+                    info_dict = {**opt, **smu, **arguments, **other}   
+                # elif file_info["datatype"] in ["DCIV"]:
+                #     other = read_dcvi(filepath)
+                #     other.pop("measured voltage", None)
+                #     other.pop("measured current", None)
+                #     other[f'ec{other["channel"]} type'] = smu.get(f'ec{other["channel"]} type', "unknown")
+                #     info_dict = {**opt, **arguments, **other}
+                else:
+                    info_dict = {**opt, **smu, **arguments}
                 self.insert_data_info(data_id,info_dict,commit=False)
 
                 
@@ -921,11 +920,11 @@ class DatabaseAPI:
             self.conn.commit()
             # for src, dst in tqdm(move_path, desc="Moving", unit="file"):
             #     shutil.move(str(src), str(dst))
-            # with ThreadPoolExecutor(max_workers=4) as executor:
-            #     list(tqdm(executor.map(self.move_file, move_path), 
-            #             total=len(move_path), 
-            #             desc="Moving", 
-            #             unit="file"))
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(tqdm(executor.map(self.move_file, move_path), 
+                        total=len(move_path), 
+                        desc="Moving", 
+                        unit="file"))
         except Exception:
             if self.conn:
                 self.conn.rollback()
