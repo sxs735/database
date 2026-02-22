@@ -10,96 +10,132 @@ folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3
 db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
-    db.import_measurement_folder(folder_path,schema_file="schema.sql")
-    #output_path = db.export_all_tables_to_xlsx(folder_path.parent / "database_export.xlsx")
+    db.import_session_folder(folder_path,schema_file="schema.sql")
+#%%
+with DatabaseAPI(db_path) as db:
+    output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")
+
 #%%
 with DatabaseAPI(db_path) as db:
     sql = '''
-    SELECT s.session_id,s.DUT_id,s.session_name,s.measurement_datetime
-    FROM MeasurementSessions s
+    SELECT s.session_id,s.DUT_id,s.session_name,s.measured_at
+    FROM Sessions s
     WHERE NOT EXISTS (
-    SELECT 1
-    FROM AnalysisRuns a
-    WHERE a.session_id = s.session_id)
-    ORDER BY s.measurement_datetime'''
+        SELECT 1
+        FROM Analyses a
+        JOIN Repeat r ON a.repeat_id = r.repeat_id
+        WHERE r.session_id = s.session_id)
+    ORDER BY s.measured_at'''
     result = db.query(sql)
     session_id_list = [d['session_id'] for d in result]
-    for session_id in tqdm(session_id_list, desc="Importing", unit="file"):
-        infos = db.get_measurement_data_by_session(session_id = session_id, data_type="SPCM")
-        for idx, info in enumerate(infos):
-            path = info['file_path']
-            analysis_idx = idx
-            head,data = read_spectrum(path)
-            x = data[:, 0]
-            y = data[:, 3] - data[:, 1]
-            baseline = np.polynomial.Polynomial.fit(x, y, 6)
-            loss_level = y - baseline(x)
-            prominence = -(loss_level.min() + loss_level.max())/3 
-            valley_idx, props = find_peaks(-loss_level,prominence=prominence,distance=5)
-            valley_x = x[valley_idx]
-            valley_y = loss_level[valley_idx]
-            FSRnm = valley_x[1:]-valley_x[:-1]
-            FSRnm = np.vstack((np.r_[FSRnm,np.nan],np.r_[np.nan,FSRnm]))
-            FSRnm = np.nanmax(FSRnm,axis = 0)
-            Ty = 10**(loss_level/10)
-            FWHMnm = peak_widths(-Ty, valley_idx, rel_height=0.5)[0]*np.median(np.diff(x))
-            delta_T = peak_prominences(-Ty, valley_idx)[0]
-            Q = delta_T/FWHMnm*1000
+    session_measurements = []
+    total_spcm = 0
+    for session_id in session_id_list:
+        spcm_data = db.select_rawdata_by_session_id(session_id=session_id, data_type="SPCM")
+        session_measurements.append((session_id, spcm_data))
+        total_spcm += len(spcm_data)
 
-            if len(valley_idx) <= 6:
-                analysis_id = db.insert_analysis_run(session_id = session_id,
-                                                     analysis_type = 'basic_spectrum_analysis',
-                                                     analysis_index = analysis_idx,
-                                                     algorithm = "valley_scan",
-                                                     version = "1.0.0",
+    progress_desc = "Processing SPCM files"
+    with tqdm(total=total_spcm, desc=progress_desc, unit="file") as pbar:
+        for session_id, spcm_data in session_measurements:
+            for idx, info in enumerate(spcm_data):
+                path = info['file_path']
+                instance_no = idx
+                repeat_no = info['repeat_no']
+                head,data = read_spectrum(path)
+                x = data[:, 0]
+                y = data[:, 3] - data[:, 1]
+                result, algorithm_name, version = MRM_SPCM_analysis(x, y)
+                if len(result['valley_wavelength'][0]) <= 6:
+                    analysis_id = db.insert_analysis(session_id = session_id,
+                                                     repeat_no = repeat_no,
+                                                     analysis_type = 'MRM_SPCM_analysis',
+                                                     instance_no = instance_no,
+                                                     algorithm = algorithm_name,
+                                                     version = version,
                                                      commit=False)
-                
-                db.insert_analysis_input(analysis_id, info["data_id"], commit=False)
-                for i in range(len(valley_idx)):
-                    feature_id = db.insert_analysis_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_index=i)
-                    db.insert_feature_values(feature_id, {'valley wavelength': (valley_x[i],'nm'),
-                                                          'FSR':(FSRnm[i],'nm'),
-                                                          'FWHM':(FWHMnm[i],'nm'),
-                                                          'Q factor':(Q[i],'')})
+                    
+                    db.insert_sources(analysis_id, info["data_id"], commit=False)
+                    for i in range(len(result['valley_wavelength'][0])):
+                        feature_id = db.insert_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_idx=i)
+                        db.insert_metrics(feature_id, {
+                            'valley wavelength': (result['valley_wavelength'][0][i], 'nm'),
+                            'FSR (nm)': (result['FSRnm'][0][i], 'nm'),
+                            'FSR (GHz)': (result['FSRGHz'][0][i], 'GHz'),
+                            'FWHM (nm)': (result['FWHMnm'][0][i], 'nm'),
+                            'FWHM (GHz)': (result['FWHMGHz'][0][i], 'GHz'),
+                            'Q factor': (result['Q factor'][0][i], '')
+                        })
+                pbar.update(1)
     db.conn.commit()
 
 # %%
 import matplotlib.pyplot as plt
 import time
+from pathlib import Path
+import pandas as pd
 %matplotlib qt
 with DatabaseAPI(db_path) as db:
-    spcm = {}
-    spcm_data = db.get_measurement_data_by_session(session_id = 4, data_type="SPCM")
+    spcm_data = db.select_rawdata_by_session_id(session_id = 5, data_type="SPCM")
+    data_info = [(id,db.select_datainfo_dict_by_data_id(id)) for id in [d['data_id'] for d in spcm_data]]
+    spcm = []
     for spcm_info in spcm_data:
-        data_id = spcm_info['data_id']
-        data_info = db.get_data_info_by_data(data_id=data_id)
-        spcm[data_id] = {info['key']: info['value'] for info in data_info}
-    #modulated_value = [v['ec1 value'] for v in spcm.values()]
-    dciv = {}
-    dciv_data = db.get_measurement_data_by_session(session_id = 4, data_type="DCIV")
-    for dciv_info in dciv_data:
-        data_id = dciv_info['data_id']
-        data_info = db.get_data_info_by_data(data_id=data_id)
-        dciv[data_id] = {info['key']: info['value'] for info in data_info}
-    print(dciv)
+        filename = Path(spcm_info['file_path']).name
+        meta = db.parse_filename(filename)
+        meta.pop('arguments')
+        smu = meta.pop('SMU', [])
+        meta |= dict(item for d in smu for item in d.items())
+        for key, value in list(meta.items()):
+            if all(x in key for x in ('ec','value')):
+                meta[key.split()[0]+' unit'] = meta[key][1]
+                meta[key] = meta[key][0]
+        spcm += [meta]
+    df = pd.DataFrame(spcm,index=[d['data_id'] for d in spcm_data])
+    pn = [ec for ec in {col.split()[0] for col in df.columns if 'ec' in col}
+          if any(df[f'{ec} type'] == 'pn')][0]
+    heat = [ec for ec in {col.split()[0] for col in df.columns if 'ec' in col}
+            if any(df[f'{ec} type'] == 'heat')][0]
+    df_pn = df[df[f'{pn} type'] == 'pn']
+    df_heat = df[df[f'{heat} type'] == 'heat']
+    #pn modulation
+    df_pn_grouped = df_pn.groupby([col for col in df_pn.columns if 'ec' not in col])
+    # if len(df_pn_grouped) > 1:
+    #     print("Warning: Multiple groups found in pn data. Please select the appropriate group.")
+    #     for i, (name, _) in enumerate(df_pn_grouped):
+    #         print(f"Group {i}: {name}")
+    #     select_idx = input("Enter the group number to select: ")
+    #     select_idx = [int(i) for i in select_idx.split(',')]
+    # else:
+    #     select_idx = [0]
 
-for data_id, info in spcm.items():
-    print(f"Data ID: {data_id}")
-    print([v for k, v in info.items() if 'ec' in k and 'value' in k]) 
+    for i, (name, group) in enumerate(df_pn_grouped):
+        group = group.sort_values(by=f'{pn} value')
+        data_id = group.index.values
+        if len(group) > 1:
+            value = group[f'{pn} value'].values
+            vh_id = int(data_id[np.argmax(np.abs(value))])
+            v0_id = int(data_id[np.argmin(np.abs(value))])
+            vh_path = db.select_rawdata_by_data_id(vh_id)['file_path']
+            v0_path = db.select_rawdata_by_data_id(v0_id)['file_path']
+            res = MRM_OMA_analysis(vh_path, v0_path, start=1305, end=1315)
+
+    
+    #df_heat_grouped = df_heat.groupby([col for col in df_heat.columns if 'ec' not in col])
     
 #%%    
     cmd = '''
-    SELECT md.data_id FROM MeasurementData md
+    SELECT md.data_id FROM RawDataFiles md
+    JOIN Repeat r ON md.repeat_id = r.repeat_id
     JOIN DataInfo di ON md.data_id = di.data_id
-    WHERE md.session_id = 1
+    WHERE r.session_id = 1
     AND md.data_type = 'SPCM'
     AND (
-    (di.key = 'ec1 type'    AND di.value = 'pn') OR
-    (di.key = 'ec1 channel' AND di.value = '1')  OR
-    (di.key = 'ec1 value'   AND di.value = -900.0)
+    (di.Info_key = 'ec1 type'    AND di.Info_value = 'pn') OR
+    (di.Info_key = 'ec1 channel' AND di.Info_value = '1')  OR
+    (di.Info_key = 'ec1 value'   AND di.Info_value = '-900.0')
     )
     GROUP BY md.data_id
-    HAVING COUNT(DISTINCT di.key) = 3;'''
+    HAVING COUNT(DISTINCT di.Info_key) = 3;'''
     a = db.query(cmd)
     
 # %%

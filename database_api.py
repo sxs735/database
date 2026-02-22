@@ -3,7 +3,7 @@ import re
 import shutil
 import sqlite3
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
 
 from analysis import *
@@ -14,6 +14,16 @@ class DatabaseAPI:
 
     SUPPORTED_EXTENSIONS = {".csv", ".txt", ".s2p"}
     IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    TABLE_DUT = "DUT"
+    TABLE_SESSIONS = "Sessions"
+    TABLE_REPEAT = "Repeat"
+    TABLE_CONDITIONS = "Conditions"
+    TABLE_DATA = "RawDataFiles"
+    TABLE_DATA_INFO = "DataInfo"
+    TABLE_ANALYSES = "Analyses"
+    TABLE_ANALYSIS_SOURCES = "AnalysisSources"
+    TABLE_FEATURES = "Features"
+    TABLE_METRICS = "FeatureMetrics"
     MAIN_PATTERN = re.compile(r"""
                               ^(?P<datatype>[^_]+)
                               _(?P<wafer>[^_]+)
@@ -66,12 +76,37 @@ class DatabaseAPI:
         """確保資料表或欄位名稱為合法的 SQL 標識符"""
         if not DatabaseAPI.IDENTIFIER_PATTERN.match(name):
             raise ValueError(f"Invalid {kind}: {name}. Use letters, numbers, and underscores only, starting with a letter or underscore.")
+
+    @staticmethod
+    def _normalize_timestamp(value: Optional[Union[datetime, int, float]]) -> datetime:
+        """將輸入統一為秒級精度的 datetime 物件"""
+        if value is None:
+            return datetime.now().replace(microsecond=0)
+        if isinstance(value, datetime):
+            return value.replace(microsecond=0)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value).replace(microsecond=0)
+        raise TypeError(f"Unsupported timestamp type: {type(value)!r}")
+
+    @staticmethod
+    def _coerce_db_value(raw: Any) -> Any:
+        """嘗試將 TEXT 欄位轉換回數字，否則維持原值"""
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if stripped == "":
+                return ""
+            try:
+                numeric = float(stripped)
+            except ValueError:
+                return raw
+            return int(numeric) if numeric.is_integer() else numeric
+        return raw
    
     # =========================
     # 1. 創建資料庫
     # =========================
     
-    def create_database(self, schema_file: str = "schema.sql"):
+    def create_db(self, schema_file: str = "schema.sql"):
         """
         根據 schema.sql 創建資料庫結構
         
@@ -93,7 +128,7 @@ class DatabaseAPI:
         self.conn.commit()
         print(f"資料庫已創建: {self.db_path}")
         
-    def reset_database(self, schema_file: str = "schema.sql"):
+    def reset_db(self, schema_file: str = "schema.sql"):
         """
         重置資料庫（刪除所有表並重新創建）
         
@@ -110,7 +145,7 @@ class DatabaseAPI:
             print(f"已刪除舊資料庫: {self.db_path}")
         
         # 重新創建
-        self.create_database(schema_file)
+        self.create_db(schema_file)
     
     # =========================
     # 2. 寫入資料 (INSERT/UPDATE)
@@ -143,48 +178,66 @@ class DatabaseAPI:
             self.conn.commit()
         return row["DUT_id"]
   
-    # MeasurementSessions 表
-    def insert_measurement_session(self, 
-                                   dut_id: int,
-                                   session_name: Optional[str] = None,
-                                   measurement_datetime: Optional[datetime] = None,
-                                   operator: Optional[str] = None,
-                                   system_version: Optional[str] = None,
-                                   notes: Optional[str] = None,
-                                   commit: bool = True) -> int:
+    # Sessions 表
+    def insert_session(self, 
+                       dut_id: int,
+                       session_name: Optional[str] = None,
+                       operator: Optional[str] = None,
+                       system: Optional[str] = None,
+                       notes: Optional[str] = None,
+                       measured_at: Optional[Union[datetime, int, float]] = None,
+                       commit: bool = True) -> int:
         """
         插入測量會話記錄
         
         Args:
             dut_id: DUT ID
             session_name: 會話名稱
-            measurement_datetime: 測量時間（默認為當前時間）
+            measured_at: 測試時間（默認為當前時間）
             operator: 操作員
-            system_version: 系統版本
+            system: 測試系統
             notes: 備註
             
         Returns:
             session_id
         """
-        if measurement_datetime is None:
-            measurement_datetime = datetime.now().replace(microsecond=0)
-        else:
-            measurement_datetime = datetime.fromtimestamp(measurement_datetime).replace(microsecond=0)
+        timestamp = self._normalize_timestamp(measured_at)
 
-        cursor = self.conn.execute("""INSERT INTO MeasurementSessions 
-                                  (DUT_id, session_name, measurement_datetime, operator, system_version, notes)
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_SESSIONS} 
+                                  (DUT_id, session_name, measured_at, operator, system, notes)
                                    VALUES (?, ?, ?, ?, ?, ?)
                                    ON CONFLICT (DUT_id, session_name) DO UPDATE SET
-                                   DUT_id = excluded.DUT_id   -- no-op update
+                                   measured_at = excluded.measured_at,
+                                   operator = excluded.operator,
+                                   system = excluded.system,
+                                   notes = excluded.notes
                                    RETURNING session_id""",
-                                  (dut_id, session_name, measurement_datetime, operator, system_version, notes))
+                                  (dut_id, session_name, timestamp, operator, system, notes))
         row = cursor.fetchone()
         if commit:
             self.conn.commit()
         return row["session_id"]
+
+    # Repeat 表
+    def insert_repeat(self,
+                      session_id: int,
+                      repeat_no: int,
+                      commit: bool = True) -> int:
+        """確保測量會話下的 repeat 記錄存在並回傳 repeat_id"""
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_REPEAT}
+                                   (session_id, repeat_no)
+                                   VALUES (?, ?)
+                                   ON CONFLICT (session_id, repeat_no) DO UPDATE SET
+                                   repeat_no = excluded.repeat_no
+                                   RETURNING repeat_id""",
+                                   (session_id, repeat_no))
+        repeat_id = cursor.fetchone()["repeat_id"]
+        if commit:
+            self.conn.commit()
+        return repeat_id
     
-    # ExperimentalConditions 表
-    def insert_experimental_conditions(self, session_id: int, conditions: Dict[str, Any], commit: bool = True):
+    # Conditions 表
+    def insert_conditions(self, session_id: int, conditions: Dict[str, Any], commit: bool = True):
         """
         批量插入實驗條件
         
@@ -200,46 +253,51 @@ class DatabaseAPI:
             else:
                 value, unit = value_data, None
             
-            self.conn.execute("""INSERT OR IGNORE INTO ExperimentalConditions 
-                              (session_id, key, value, unit)
+            self.conn.execute(f"""INSERT INTO {self.TABLE_CONDITIONS} 
+                              (session_id, setting_parameters, setting_value, parameters_unit)
                               VALUES (?, ?, ?, ?)
-                              ON CONFLICT (session_id, key, unit) DO UPDATE SET
-                              value = excluded.value""",
+                              ON CONFLICT (session_id, setting_parameters, parameters_unit) DO UPDATE SET
+                              setting_value = excluded.setting_value""",
                               (session_id, key, value, unit))
         if commit:
             self.conn.commit()
     
-    # MeasurementData 表
-    def insert_measurement_data(self,
-                                session_id: int,
-                                data_type: str,
-                                file_path: str,
-                                created_time: Optional[datetime] = None,
-                                commit: bool = True) -> int:
+    # RawDataFiles 表
+    def insert_rawdata_file(self,
+                            session_id: int,
+                            repeat_no: int,
+                            data_type: str,
+                            file_path: str,
+                            file_name: Optional[str] = None,
+                            recorded_at: Optional[Union[datetime, int, float]] = None,
+                            commit: bool = True) -> int:
         """
         插入測量數據記錄
         
         Args:
             session_id: 會話 ID
+            repeat_no: 重複編號（對應 Repeat 表）
             data_type: 數據類型（如 'spectrum'）
             file_path: 文件路徑
-            created_time: 創建時間（默認為當前時間）
+            file_name: 檔名（預設取自 file_path）
+            recorded_at: 紀錄時間（默認為當前時間）
             
         Returns:
             data_id
         """
-        if created_time is None:
-            created_time = datetime.now().replace(microsecond=0)
-        else:
-            created_time = datetime.fromtimestamp(created_time).replace(microsecond=0)
-            
-        cursor = self.conn.execute("""INSERT OR IGNORE INTO MeasurementData 
-                                   (session_id, data_type, file_path, created_time)
-                                   VALUES (?, ?, ?, ?)
-                                   ON CONFLICT (session_id, file_path) DO UPDATE SET
-                                   session_id = excluded.session_id   -- no-op update
-                                   RETURNING data_id""",
-                                   (session_id, data_type, file_path, created_time))
+        recorded_at = self._normalize_timestamp(recorded_at)
+        resolved_name = file_name or Path(file_path).name
+
+        repeat_id = self.insert_repeat(session_id, repeat_no, commit=False)
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_DATA} 
+                       (repeat_id, data_type, file_name, file_path, recorded_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (repeat_id, file_path) DO UPDATE SET
+                       data_type = excluded.data_type,
+                       file_name = excluded.file_name,
+                       recorded_at = excluded.recorded_at
+                       RETURNING data_id""",
+                       (repeat_id, data_type, resolved_name, file_path, recorded_at))
         row = cursor.fetchone()
         if commit:
             self.conn.commit()
@@ -260,31 +318,33 @@ class DatabaseAPI:
                 value, unit = value_data
             else:
                 value, unit = value_data, None
-
-            self.conn.execute("""INSERT OR IGNORE INTO DataInfo 
-                              (data_id, key, value, unit)
+            self.conn.execute(f"""INSERT INTO {self.TABLE_DATA_INFO} 
+                              (data_id, info_key, info_value, info_unit)
                               VALUES (?, ?, ?, ?)
-                              ON CONFLICT (data_id, key, unit) DO UPDATE SET
-                              value = excluded.value""",
+                              ON CONFLICT (data_id, info_key, info_unit) DO UPDATE SET
+                              info_value = excluded.info_value""",
                               (data_id, key, value, unit))
         if commit:
             self.conn.commit()
     
-    # AnalysisRuns 表
-    def insert_analysis_run(self,session_id: int,
-                            analysis_type: str,
-                            analysis_index: int,
-                            algorithm: Optional[str] = None,
-                            version: Optional[str] = None,
-                            created_time: Optional[datetime] = None,
-                            commit: bool = True) -> int:
+    # Analyses 表
+    def insert_analysis(self,
+                        session_id: int,
+                        repeat_no: int,
+                        analysis_type: str,
+                        instance_no: int,
+                        algorithm: Optional[str] = None,
+                        version: Optional[str] = None,
+                        created_time: Optional[datetime] = None,
+                        commit: bool = True) -> int:
         """
         插入分析執行記錄
         
         Args:
             session_id: 會話 ID
+            repeat_no: 重複編號（對應 Repeat 表）
             analysis_type: 分析類型（如 'peak_detection'）
-            analysis_index: 分析索引
+            instance_no: 分析實例編號
             algorithm: 具體演算法名稱
             version: 演算法版本
             created_time: 創建時間（默認為當前時間）
@@ -299,57 +359,58 @@ class DatabaseAPI:
         if version is None:
             version = "1.0.0"
 
-        cursor = self.conn.execute("""INSERT INTO AnalysisRuns 
-                                   (session_id, analysis_type, analysis_index, algorithm, version, created_time)
+        repeat_id = self.insert_repeat(session_id, repeat_no, commit=False)
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_ANALYSES} 
+                                   (repeat_id, analysis_type, instance_no, algorithm, version, created_time)
                                    VALUES (?, ?, ?, ?, ?, ?)
-                                   ON CONFLICT (session_id, analysis_type, analysis_index) DO UPDATE SET
+                                   ON CONFLICT (repeat_id, analysis_type, instance_no) DO UPDATE SET
                                    algorithm = excluded.algorithm,
                                    version = excluded.version,
                                    created_time = excluded.created_time
                                    RETURNING analysis_id""",
-                                   (session_id, analysis_type, analysis_index, algorithm, version, created_time))
+                                   (repeat_id, analysis_type, instance_no, algorithm, version, created_time))
         row = cursor.fetchone()
         if commit:
             self.conn.commit()
         return row["analysis_id"]
 
-    # AnalysisInputs 表
-    def insert_analysis_input(self, analysis_id: int, data_id: int, commit: bool = True) -> None:
+    # AnalysisSources 表
+    def insert_sources(self, analysis_id: int, data_id: int, commit: bool = True) -> None:
         """建立分析與測量數據的對應"""
-        self.conn.execute("""INSERT OR IGNORE INTO AnalysisInputs
+        self.conn.execute(f"""INSERT OR IGNORE INTO {self.TABLE_ANALYSIS_SOURCES}
                           (analysis_id, data_id)
                           VALUES (?, ?)""",
                           (analysis_id, data_id))
         if commit:
             self.conn.commit()
     
-    # AnalysisFeatures 表
-    def insert_analysis_feature(self,analysis_id: int,feature_type: str,feature_index: int, commit: bool = True) -> int:
+    # Features 表
+    def insert_feature(self,analysis_id: int,feature_type: str,feature_idx: int, commit: bool = True) -> int:
         """
         插入分析特徵記錄
         
         Args:
             analysis_id: 分析 ID
             feature_type: 特徵類型（如 'peak', 'valley'）
-            feature_index: 特徵索引
+            feature_idx: 特徵索引（對應 schema 中的 feature_idx）
             
         Returns:
             feature_id
         """
-        cursor = self.conn.execute("""INSERT INTO AnalysisFeatures 
-                                   (analysis_id, feature_type, feature_index)
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_FEATURES} 
+                                   (analysis_id, feature_type, feature_idx)
                                    VALUES (?, ?, ?)
-                                   ON CONFLICT (analysis_id, feature_type, feature_index) DO UPDATE SET
-                                   feature_index = excluded.feature_index
+                                   ON CONFLICT (analysis_id, feature_type, feature_idx) DO UPDATE SET
+                                   feature_idx = excluded.feature_idx
                                    RETURNING feature_id""",
-                                   (analysis_id, feature_type, feature_index))
+                                   (analysis_id, feature_type, feature_idx))
         row = cursor.fetchone()
         if commit:
             self.conn.commit()
         return row["feature_id"]
     
-    # FeatureValues 表
-    def insert_feature_values(self, feature_id: int, values: Dict[str, Any], commit: bool = True):
+    # FeatureMetrics 表
+    def insert_metrics(self, feature_id: int, values: Dict[str, Any], commit: bool = True):
         """
         批量插入特徵值
         
@@ -365,11 +426,11 @@ class DatabaseAPI:
             else:
                 value, unit = value_data, None
             
-            self.conn.execute("""INSERT OR IGNORE INTO FeatureValues 
-                              (feature_id, key, value, unit)
+            self.conn.execute(f"""INSERT INTO {self.TABLE_METRICS} 
+                              (feature_id, metric_key, metric_value, metric_unit)
                               VALUES (?, ?, ?, ?)
-                              ON CONFLICT (feature_id, key, unit) DO UPDATE SET
-                              value = excluded.value""",
+                              ON CONFLICT (feature_id, metric_key, metric_unit) DO UPDATE SET
+                              metric_value = excluded.metric_value""",
                               (feature_id, key, value, unit))
         if commit:
             self.conn.commit()
@@ -394,12 +455,12 @@ class DatabaseAPI:
         return [dict(row) for row in rows]
     
     # DUT 查詢
-    def get_dut_by_id(self, dut_id: int) -> Optional[Dict[str, Any]]:
+    def select_dut_by_id(self, dut_id: int) -> Optional[Dict[str, Any]]:
         """根據 ID 查詢 DUT"""
         results = self.query("SELECT * FROM DUT WHERE DUT_id = ?", (dut_id,))
         return results[0] if results else None
     
-    def get_duts(self, wafer: Optional[str] = None, die: Optional[int] = None) -> List[Dict[str, Any]]:
+    def select_list_duts(self, wafer: Optional[str] = None, die: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         查詢 DUT
         
@@ -419,109 +480,146 @@ class DatabaseAPI:
             
         return self.query(sql, tuple(params))
     
-    # MeasurementSessions 查詢
-    def get_session_by_id(self, session_id: int) -> Optional[Dict[str, Any]]:
+    # Sessions 查詢
+    def select_session_by_id(self, session_id: int) -> Optional[Dict[str, Any]]:
         """根據 ID 查詢測量會話"""
-        results = self.query("SELECT * FROM MeasurementSessions WHERE session_id = ?", (session_id,))
+        results = self.query(f"SELECT * FROM {self.TABLE_SESSIONS} WHERE session_id = ?", (session_id,))
         return results[0] if results else None
     
-    def get_sessions_by_dut(self, dut_id: int) -> List[Dict[str, Any]]:
+    def select_sessions_by_dut_id(self, dut_id: int) -> List[Dict[str, Any]]:
         """查詢特定 DUT 的所有測量會話"""
-        return self.query("SELECT * FROM MeasurementSessions WHERE DUT_id = ? ORDER BY measurement_datetime DESC",(dut_id,))
+        return self.query(f"SELECT * FROM {self.TABLE_SESSIONS} WHERE DUT_id = ? ORDER BY measured_at DESC",(dut_id,))
     
-    def get_sessions_by_date_range(self,start_date: datetime,end_date: datetime) -> List[Dict[str, Any]]:
+    def select_sessions_by_date_range(self,start_date: datetime,end_date: datetime) -> List[Dict[str, Any]]:
         """查詢日期範圍內的測量會話"""
-        return self.query("""SELECT * FROM MeasurementSessions 
-                          WHERE measurement_datetime BETWEEN ? AND ? ORDER BY measurement_datetime DESC""",
+        return self.query(f"""SELECT * FROM {self.TABLE_SESSIONS} 
+                          WHERE measured_at BETWEEN ? AND ? ORDER BY measured_at DESC""",
                           (start_date, end_date))
     
-    # ExperimentalConditions 查詢
-    def get_conditions_by_session(self, session_id: int) -> List[Dict[str, Any]]:
+    # Conditions 查詢
+    def select_conditions_by_session_id(self, session_id: int) -> List[Dict[str, Any]]:
         """查詢特定會話的所有實驗條件"""
-        return self.query("SELECT * FROM ExperimentalConditions WHERE session_id = ?",(session_id,))
+        return self.query(f"SELECT * FROM {self.TABLE_CONDITIONS} WHERE session_id = ?",(session_id,))
     
-    def get_conditions_dict(self, session_id: int) -> Dict[str, Tuple[float, Optional[str]]]:
+    def select_conditions_dict_by_session_id(self, session_id: int) -> Dict[str, Tuple[Any, Optional[str]]]:
         """以字典形式返回實驗條件（包含單位）"""
-        conditions = self.get_conditions_by_session(session_id)
-        return {cond['key']: (cond['value'], cond['unit']) for cond in conditions}
+        conditions = self.select_conditions_by_session_id(session_id)
+        return {cond['setting_parameters']: (self._coerce_db_value(cond['setting_value']), cond['parameters_unit']) for cond in conditions}
     
-    # MeasurementData 查詢
-    def get_measurement_data_by_session(self,session_id: int,data_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """查詢特定會話的測量數據"""
+    # RawDataFiles 查詢
+    def select_rawdata_by_session_id(self,
+                                     session_id: int,
+                                     data_type: Optional[str] = None,
+                                     repeat_no: Optional[int] = None) -> List[Dict[str, Any]]:
+        """查詢特定會話 (可選 repeat) 的測量數據"""
+        sql = f"""SELECT md.*, r.session_id AS session_id, r.repeat_no AS repeat_no
+                  FROM {self.TABLE_DATA} md
+                  JOIN {self.TABLE_REPEAT} r ON md.repeat_id = r.repeat_id
+                  WHERE r.session_id = ?"""
+        params: List[Any] = [session_id]
+
+        if repeat_no is not None:
+            sql += " AND r.repeat_no = ?"
+            params.append(repeat_no)
         if data_type:
-            return self.query("SELECT * FROM MeasurementData WHERE session_id = ? AND data_type = ?",
-                              (session_id, data_type))
-        else:
-            return self.query("SELECT * FROM MeasurementData WHERE session_id = ?",
-                              (session_id,))
+            sql += " AND md.data_type = ?"
+            params.append(data_type)
+
+        sql += " ORDER BY r.repeat_no, md.data_id"
+        return self.query(sql, tuple(params))
+
+    def select_rawdata_by_data_id(self, data_id: int) -> Optional[Dict[str, Any]]:
+        """根據 data_id 查詢單筆測量數據"""
+        sql = f"""SELECT md.*, r.session_id AS session_id, r.repeat_no AS repeat_no
+                  FROM {self.TABLE_DATA} md
+                  JOIN {self.TABLE_REPEAT} r ON md.repeat_id = r.repeat_id
+                  WHERE md.data_id = ?"""
+        results = self.query(sql, (data_id,))
+        return results[0] if results else None
 
     # DataInfo 查詢
-    def get_data_info_by_data(self, data_id: int) -> List[Dict[str, Any]]:
+    def select_datainfo_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
         """查詢特定測量數據的所有資訊"""
-        return self.query("SELECT * FROM DataInfo WHERE data_id = ?", (data_id,))
+        return self.query(f"SELECT * FROM {self.TABLE_DATA_INFO} WHERE data_id = ?", (data_id,))
 
-    def get_data_info_dict(self, data_id: int) -> Dict[str, Tuple[float, Optional[str]]]:
+    def select_datainfo_dict_by_data_id(self, data_id: int) -> Dict[str, Tuple[Any, Optional[str]]]:
         """以字典形式返回測量數據資訊（包含單位）"""
-        info = self.get_data_info_by_data(data_id)
-        return {item['key']: (item['value'], item['unit']) for item in info}
+        info = self.select_datainfo_by_data_id(data_id)
+        return {item['info_key']: (self._coerce_db_value(item['info_value']), item['info_unit']) for item in info}
     
-    # AnalysisRuns 查詢
-    def get_analysis_runs_by_session(self,session_id: int,analysis_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """查詢特定會話的分析執行"""
-        if analysis_type:
-            return self.query("SELECT * FROM AnalysisRuns WHERE session_id = ? AND analysis_type = ?",
-                              (session_id, analysis_type))
-        else:
-            return self.query("SELECT * FROM AnalysisRuns WHERE session_id = ?",
-                              (session_id,))
+    # Analyses 查詢
+    def select_analyses_by_session_id(self,
+                                      session_id: int,
+                                      analysis_type: Optional[str] = None,
+                                      repeat_no: Optional[int] = None) -> List[Dict[str, Any]]:
+        """查詢特定會話 (可選 repeat) 的分析執行"""
+        sql = f"""SELECT a.*, r.session_id AS session_id, r.repeat_no
+                  FROM {self.TABLE_ANALYSES} a
+                  JOIN {self.TABLE_REPEAT} r ON a.repeat_id = r.repeat_id
+                  WHERE r.session_id = ?"""
+        params: List[Any] = [session_id]
 
-    # AnalysisInputs 查詢
-    def get_analysis_inputs(self, analysis_id: int) -> List[Dict[str, Any]]:
+        if repeat_no is not None:
+            sql += " AND r.repeat_no = ?"
+            params.append(repeat_no)
+        if analysis_type:
+            sql += " AND a.analysis_type = ?"
+            params.append(analysis_type)
+
+        sql += " ORDER BY r.repeat_no, a.analysis_id"
+        return self.query(sql, tuple(params))
+
+    # AnalysisSources 查詢
+    def select_sources_by_analysis_id(self, analysis_id: int) -> List[Dict[str, Any]]:
         """查詢分析所對應的測量數據 ID"""
-        return self.query("SELECT * FROM AnalysisInputs WHERE analysis_id = ?",
+        return self.query(f"SELECT * FROM {self.TABLE_ANALYSIS_SOURCES} WHERE analysis_id = ?",
                           (analysis_id,))
 
-    def get_analysis_input_data(self, analysis_id: int) -> List[Dict[str, Any]]:
+    def select_sourcesinfo_by_analysis_id(self, analysis_id: int) -> List[Dict[str, Any]]:
         """查詢分析所對應的完整測量數據紀錄"""
-        sql = """SELECT md.* FROM AnalysisInputs ai
-                 JOIN MeasurementData md ON ai.data_id = md.data_id
+        sql = f"""SELECT md.*, r.session_id AS session_id, r.repeat_no AS repeat_no
+                 FROM {self.TABLE_ANALYSIS_SOURCES} ai
+                 JOIN {self.TABLE_DATA} md ON ai.data_id = md.data_id
+                 JOIN {self.TABLE_REPEAT} r ON md.repeat_id = r.repeat_id
                  WHERE ai.analysis_id = ?
                  ORDER BY md.data_id"""
         return self.query(sql, (analysis_id,))
 
-    def get_analyses_by_data(self, data_id: int) -> List[Dict[str, Any]]:
+    def select_analyses_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
         """查詢某筆測量數據被哪些分析使用"""
-        sql = """SELECT ar.* FROM AnalysisInputs ai
-                 JOIN AnalysisRuns ar ON ai.analysis_id = ar.analysis_id
+        sql = f"""SELECT ar.*, r.session_id AS session_id, r.repeat_no
+                 FROM {self.TABLE_ANALYSIS_SOURCES} ai
+                 JOIN {self.TABLE_ANALYSES} ar ON ai.analysis_id = ar.analysis_id
+                 JOIN {self.TABLE_REPEAT} r ON ar.repeat_id = r.repeat_id
                  WHERE ai.data_id = ?
                  ORDER BY ar.analysis_id"""
         return self.query(sql, (data_id,))
     
-    # AnalysisFeatures 查詢
-    def get_features_by_analysis(self,analysis_id: int,feature_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    # Features 查詢
+    def select_features_by_analysis_id(self,analysis_id: int,feature_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """查詢特定分析的特徵"""
         if feature_type:
-            return self.query("SELECT * FROM AnalysisFeatures WHERE analysis_id = ? AND feature_type = ? ORDER BY feature_index",
+            return self.query(f"SELECT * FROM {self.TABLE_FEATURES} WHERE analysis_id = ? AND feature_type = ? ORDER BY feature_idx",
                               (analysis_id, feature_type))
         else:
-            return self.query("SELECT * FROM AnalysisFeatures WHERE analysis_id = ? ORDER BY feature_index",
+            return self.query(f"SELECT * FROM {self.TABLE_FEATURES} WHERE analysis_id = ? ORDER BY feature_idx",
                               (analysis_id,))
     
-    # FeatureValues 查詢
-    def get_feature_values(self, feature_id: int) -> List[Dict[str, Any]]:
+    # FeatureMetrics 查詢
+    def select_metrics_by_feature_id(self, feature_id: int) -> List[Dict[str, Any]]:
         """查詢特定特徵的所有值"""
-        return self.query("SELECT * FROM FeatureValues WHERE feature_id = ?",(feature_id,))
+        return self.query(f"SELECT * FROM {self.TABLE_METRICS} WHERE feature_id = ?",(feature_id,))
     
-    def get_feature_values_dict(self, feature_id: int) -> Dict[str, Tuple[float, Optional[str]]]:
+    def select_metrics_dict_by_feature_id(self, feature_id: int) -> Dict[str, Tuple[float, Optional[str]]]:
         """以字典形式返回特徵值"""
-        values = self.get_feature_values(feature_id)
-        return {val['key']: (val['value'], val['unit']) for val in values}
+        values = self.select_metrics_by_feature_id(feature_id)
+        return {val['metric_key']: (val['metric_value'], val['metric_unit']) for val in values}
     
-    def search_features_by_value(self,
-                                 key: str,
-                                 min_value: Optional[float] = None,
-                                 max_value: Optional[float] = None,
-                                 unit: Optional[str] = None) -> List[Dict[str, Any]]:
+    def select_metrics_by_value_range(self,
+                       key: str,
+                       min_value: Optional[float] = None,
+                       max_value: Optional[float] = None,
+                       unit: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         根據特徵值範圍搜索
         
@@ -531,23 +629,31 @@ class DatabaseAPI:
             max_value: 最大值（可選）
             unit: 單位（可選）
         """
-        sql = "SELECT * FROM FeatureValues WHERE key = ?"
+        sql = f"""SELECT metric_id,
+                       feature_id,
+                       metric_key,
+                       metric_value,
+                       metric_unit,
+                       metric_value AS value,
+                       metric_unit AS unit
+                FROM {self.TABLE_METRICS}
+                WHERE metric_key = ?"""
         params = [key]
         
         if unit is not None:
-            sql += " AND unit = ?"
+            sql += " AND metric_unit = ?"
             params.append(unit)
         if min_value is not None:
-            sql += " AND value >= ?"
+            sql += " AND metric_value >= ?"
             params.append(min_value)
         if max_value is not None:
-            sql += " AND value <= ?"
+            sql += " AND metric_value <= ?"
             params.append(max_value)
             
         return self.query(sql, tuple(params))
     
     # 複雜查詢：完整的測量會話資訊
-    def get_session_full_info(self, session_id: int) -> Dict[str, Any]:
+    def select_session_details(self, session_id: int) -> Dict[str, Any]:
         """
         獲取測量會話的完整資訊（包括 DUT、條件、數據等）
         
@@ -555,28 +661,28 @@ class DatabaseAPI:
             包含所有相關信息的字典
         """
         # 基本會話信息
-        session = self.get_session_by_id(session_id)
+        session = self.select_session_by_id(session_id)
         if not session:
             return {}
         
         # DUT 信息
-        session['dut'] = self.get_dut_by_id(session['DUT_id'])
+        session['dut'] = self.select_dut_by_id(session['DUT_id'])
         
         # 實驗條件
-        session['conditions'] = self.get_conditions_dict(session_id)
+        session['conditions'] = self.select_conditions_dict_by_session_id(session_id)
         
         # 測量數據
-        session['measurement_data'] = self.get_measurement_data_by_session(session_id)
+        session['measurement_data'] = self.select_rawdata_by_session_id(session_id)
         
         # 分析執行
-        analysis_runs = self.get_analysis_runs_by_session(session_id)
+        analysis_runs = self.select_analyses_by_session_id(session_id)
         for analysis in analysis_runs:
-            analysis['inputs'] = self.get_analysis_input_data(analysis['analysis_id'])
+            analysis['inputs'] = self.select_sourcesinfo_by_analysis_id(analysis['analysis_id'])
             # 每個分析的特徵
-            features = self.get_features_by_analysis(analysis['analysis_id'])
+            features = self.select_features_by_analysis_id(analysis['analysis_id'])
             for feature in features:
                 # 每個特徵的值
-                feature['values'] = self.get_feature_values_dict(feature['feature_id'])
+                feature['values'] = self.select_metrics_dict_by_feature_id(feature['feature_id'])
             analysis['features'] = features
         session['analysis_runs'] = analysis_runs
         
@@ -610,64 +716,64 @@ class DatabaseAPI:
         Returns:
             刪除的行數
         """
-        cursor = self.conn.execute("DELETE FROM MeasurementSessions WHERE session_id = ?", (session_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_SESSIONS} WHERE session_id = ?", (session_id,))
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_experimental_condition(self, condition_id: int) -> int:
+    def delete_condition(self, condition_id: int) -> int:
         """刪除實驗條件"""
-        cursor = self.conn.execute("DELETE FROM ExperimentalConditions WHERE condition_id = ?", (condition_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_CONDITIONS} WHERE condition_id = ?", (condition_id,))
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_measurement_data(self, data_id: int) -> int:
+    def delete_rawdata(self, data_id: int) -> int:
         """刪除測量數據"""
-        cursor = self.conn.execute("DELETE FROM MeasurementData WHERE data_id = ?", (data_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_DATA} WHERE data_id = ?", (data_id,))
         self.conn.commit()
         return cursor.rowcount
 
     def delete_data_info(self, info_id: int) -> int:
         """刪除測量數據資訊"""
-        cursor = self.conn.execute("DELETE FROM DataInfo WHERE info_id = ?", (info_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_DATA_INFO} WHERE info_id = ?", (info_id,))
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_analysis_run(self, analysis_id: int) -> int:
+    def delete_analyses(self, analysis_id: int) -> int:
         """刪除分析執行（會級聯刪除相關特徵和特徵值）"""
-        cursor = self.conn.execute("DELETE FROM AnalysisRuns WHERE analysis_id = ?", (analysis_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ANALYSES} WHERE analysis_id = ?", (analysis_id,))
         self.conn.commit()
         return cursor.rowcount
 
-    def delete_analysis_input(self, analysis_id: int, data_id: int) -> int:
+    def delete_sources(self, analysis_id: int, data_id: int) -> int:
         """刪除分析與測量數據的對應"""
-        cursor = self.conn.execute("DELETE FROM AnalysisInputs WHERE analysis_id = ? AND data_id = ?",
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ANALYSIS_SOURCES} WHERE analysis_id = ? AND data_id = ?",
                                    (analysis_id, data_id))
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_analysis_feature(self, feature_id: int) -> int:
+    def delete_feature(self, feature_id: int) -> int:
         """刪除分析特徵（會級聯刪除相關特徵值）"""
-        cursor = self.conn.execute("DELETE FROM AnalysisFeatures WHERE feature_id = ?", (feature_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_FEATURES} WHERE feature_id = ?", (feature_id,))
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_feature_value(self, value_id: int) -> int:
+    def delete_metrics(self, metric_id: int) -> int:
         """刪除特徵值"""
-        cursor = self.conn.execute("DELETE FROM FeatureValues WHERE value_id = ?", (value_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_METRICS} WHERE metric_id = ?", (metric_id,))
         self.conn.commit()
         return cursor.rowcount
     
     # 批量刪除
     def delete_sessions_by_dut(self, dut_id: int) -> int:
         """刪除特定 DUT 的所有會話"""
-        cursor = self.conn.execute("DELETE FROM MeasurementSessions WHERE DUT_id = ?", (dut_id,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_SESSIONS} WHERE DUT_id = ?", (dut_id,))
         self.conn.commit()
         return cursor.rowcount
     
     def delete_old_sessions(self, before_date: datetime) -> int:
         """刪除指定日期之前的所有會話"""
-        cursor = self.conn.execute("DELETE FROM MeasurementSessions WHERE measurement_datetime < ?",
-                                   (before_date,))
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_SESSIONS} WHERE measured_at < ?",
+                       (before_date,))
         self.conn.commit()
         return cursor.rowcount
     
@@ -682,8 +788,16 @@ class DatabaseAPI:
     
     def get_database_stats(self) -> Dict[str, int]:
         """獲取資料庫統計信息"""
-        tables = ['DUT', 'MeasurementSessions', 'ExperimentalConditions', 
-                  'MeasurementData', 'DataInfo', 'AnalysisRuns', 'AnalysisInputs', 'AnalysisFeatures', 'FeatureValues']
+        tables = [self.TABLE_DUT, 
+                  self.TABLE_SESSIONS, 
+                  self.TABLE_REPEAT, 
+                  self.TABLE_CONDITIONS, 
+                  self.TABLE_DATA, 
+                  self.TABLE_DATA_INFO, 
+                  self.TABLE_ANALYSES, 
+                  self.TABLE_ANALYSIS_SOURCES, 
+                  self.TABLE_FEATURES, 
+                  self.TABLE_METRICS]
         return {table: self.get_table_count(table) for table in tables}
 
     def add_column(self,
@@ -831,13 +945,13 @@ class DatabaseAPI:
         except OSError:
             shutil.move(str(src), str(dst))  # 跨磁碟機降級
 
-    def import_measurement_folder(self,
-                                  folder_path: str,
-                                  target_root: Optional[str] = None,
-                                  schema_file: str = "schema.sql",
-                                  operator: str = "T&P",
-                                  system_version: str = "CM300v1.0",
-                                  notes: str = "",) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
+    def import_session_folder(self,
+                              folder_path: str,
+                              target_root: Optional[str] = None,
+                              schema_file: str = "schema.sql",
+                              operator: str = "T&P",
+                              system: str = "CM300v1.0",
+                              notes: str = "",) -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
         """
         解析資料夾內檔案並寫入資料庫，完成後移動檔案到目標資料夾。
 
@@ -848,28 +962,30 @@ class DatabaseAPI:
         valid_files, invalid_files = self.parse_folder(folder)
 
         if target_root is None:
-            target_root_path = Path(self.db_path).parent / "MeasurementData"
+            target_root_path = Path(self.db_path).parent / "RawDataFiles"
         else:
             target_root_path = Path(target_root)
 
         try:
-            self.create_database(schema_file)
+            self.create_db(schema_file)
         except Exception:
             pass
         
-        measurement_datetime = folder.stat().st_mtime
+        tested_timestamp = folder.stat().st_mtime
         move_path = []
         try:
             self.conn.execute("BEGIN")
             for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
                 file_info = dict(file_info_raw)
-                session_name = folder.name + (r"_#" + file_info["repeat"] if file_info["repeat"] != "1" else "")
+                session_name = folder.name
+                repeat_folder = r"#" + file_info["repeat"]
+                repeat_no = int(file_info["repeat"])
                 target_dir = (target_root_path/ 
                               file_info["wafer"]/ 
                               file_info["doe"]/ 
                               file_info["cage"]/
                               file_info["device"]/
-                              f"die{file_info['die']}"/ session_name)
+                              f"die{file_info['die']}"/ session_name/ repeat_folder)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
 
@@ -880,37 +996,43 @@ class DatabaseAPI:
                                          device=file_info["device"],
                                          commit=False)
 
-                session_id = self.insert_measurement_session(dut_id=dut_id,
-                                                             session_name=session_name,
-                                                             operator=operator,
-                                                             system_version=system_version,
-                                                             measurement_datetime=measurement_datetime,
-                                                             notes=notes,
-                                                             commit=False)
+                session_id = self.insert_session(dut_id=dut_id,
+                                                 session_name=session_name,
+                                                 operator=operator,
+                                                 system=system,
+                                                 measured_at=tested_timestamp,
+                                                 notes=notes,
+                                                 commit=False)
+                self.insert_conditions(session_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
 
-                self.insert_experimental_conditions(session_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
-
-                data_id = self.insert_measurement_data(session_id=session_id,
-                                                       data_type=file_info["datatype"],
-                                                       created_time=filepath.stat().st_mtime,
-                                                       file_path=str(dst),
-                                                       commit=False)
+                data_id = self.insert_rawdata_file(session_id=session_id,
+                                                   repeat_no=repeat_no,
+                                                   data_type=file_info["datatype"],
+                                                   recorded_at=filepath.stat().st_mtime,
+                                                   file_path=str(dst),
+                                                   file_name=filepath.name,
+                                                   commit=False)
                 opt = {"channel_in": file_info["ch_in"],
                        "channel_out": file_info["ch_out"],
                        "power": (file_info["power"], "dBm")}
                 smu = file_info.pop("SMU")
                 smu = {k: v for d in smu for k, v in d.items()}
+                ec_types = [smu[key] for key in smu if all(x in key for x in ('ec','type'))]
+                isheat = 'heat' in ec_types and len(ec_types) == 1
                 arguments = file_info.pop("arguments")
                 arguments = {k: v for d in arguments for k, v in d.items()}
                 if file_info["datatype"] in ["SPCM"]:
                     other, _ = read_spectrum(filepath)
                     info_dict = {**opt, **smu, **arguments, **other}   
-                # elif file_info["datatype"] in ["DCIV"]:
-                #     other = read_dcvi(filepath)
-                #     other.pop("measured voltage", None)
-                #     other.pop("measured current", None)
-                #     other[f'ec{other["channel"]} type'] = smu.get(f'ec{other["channel"]} type', "unknown")
-                #     info_dict = {**opt, **arguments, **other}
+                elif file_info["datatype"] in ["DCIV"] and isheat:
+                    other = read_dcvi(filepath)
+                    resistance = (round(other["measured voltage"][0] / other["measured current"][0], 2) 
+                                  if other["measured current"][0] != 0 else 'DIV/0')
+                    other[f'ec{other["channel"]} resistance'] = (resistance, "Ohm")
+                    other.pop("measured voltage", 0)
+                    other.pop("measured current", 0)
+
+                    info_dict = {**opt,**smu, **arguments, **other}
                 else:
                     info_dict = {**opt, **smu, **arguments}
                 self.insert_data_info(data_id,info_dict,commit=False)

@@ -15,124 +15,131 @@ CREATE TABLE IF NOT EXISTS DUT (
 CREATE INDEX IF NOT EXISTS idx_dut_wafer_die ON DUT (wafer, die);
 
 -- =========================
--- MeasurementSessions
+-- Sessions
 -- =========================
-CREATE TABLE IF NOT EXISTS MeasurementSessions (
+CREATE TABLE IF NOT EXISTS Sessions (
     session_id INTEGER PRIMARY KEY,
     DUT_id INTEGER NOT NULL,
     session_name TEXT,
-    measurement_datetime DATETIME,
+    measured_at DATETIME,
     operator TEXT,
-    system_version TEXT,
+    system TEXT,
     notes TEXT,
     FOREIGN KEY (DUT_id) REFERENCES DUT(DUT_id) ON DELETE CASCADE,
     UNIQUE (DUT_id,session_name));
 
-CREATE INDEX IF NOT EXISTS idx_session_dut ON MeasurementSessions (DUT_id);
-CREATE INDEX IF NOT EXISTS idx_session_datetime ON MeasurementSessions (measurement_datetime);
+-- =========================
+-- Repeat
+-- =========================
+CREATE TABLE IF NOT EXISTS Repeat (
+    repeat_id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    repeat_no INTEGER NOT NULL,
+    UNIQUE (session_id, repeat_no),
+    FOREIGN KEY (session_id) REFERENCES Sessions(session_id) ON DELETE CASCADE);
 
 -- =========================
--- ExperimentalConditions
+-- Conditions
 -- =========================
-CREATE TABLE IF NOT EXISTS ExperimentalConditions (
+CREATE TABLE IF NOT EXISTS Conditions (
     condition_id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL,
-    key TEXT NOT NULL,
-    value REAL NOT NULL,
-    unit TEXT,
-    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
-    UNIQUE (session_id, key, unit));
+    setting_parameters TEXT NOT NULL,
+    setting_value REAL NOT NULL,
+    parameters_unit TEXT,
+    FOREIGN KEY (session_id) REFERENCES Sessions(session_id) ON DELETE CASCADE,
+    UNIQUE (session_id, setting_parameters, parameters_unit));
 
-CREATE INDEX IF NOT EXISTS idx_condition_session ON ExperimentalConditions (session_id);
+CREATE INDEX IF NOT EXISTS idx_condition_session ON Conditions (session_id);
 
 -- =========================
--- MeasurementData
+-- RawDataFiles
 -- =========================
-CREATE TABLE IF NOT EXISTS MeasurementData (
+CREATE TABLE IF NOT EXISTS RawDataFiles (
     data_id INTEGER PRIMARY KEY,
-    session_id INTEGER NOT NULL,
+    repeat_id INTEGER NOT NULL,
     data_type TEXT NOT NULL,     -- e.g. 'spectrum'
+    file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
-    created_time DATETIME,
-    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
-    UNIQUE (session_id, file_path));
+    recorded_at DATETIME,
+    FOREIGN KEY (repeat_id) REFERENCES Repeat(repeat_id) ON DELETE CASCADE,
+    UNIQUE (repeat_id, file_path));
 
-CREATE INDEX IF NOT EXISTS idx_data_session ON MeasurementData (session_id);
-CREATE INDEX IF NOT EXISTS idx_data_type ON MeasurementData (data_type);
+CREATE INDEX IF NOT EXISTS idx_data_repeat ON RawDataFiles (repeat_id);
+CREATE INDEX IF NOT EXISTS idx_data_type ON RawDataFiles (data_type);
 
 -- =========================
 -- DataInfo
 -- =========================
 CREATE TABLE IF NOT EXISTS DataInfo (
-    info_id INTEGER PRIMARY KEY,
     data_id INTEGER NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL,
-    unit TEXT,
-    FOREIGN KEY (data_id) REFERENCES MeasurementData(data_id) ON DELETE CASCADE,
-    UNIQUE (data_id, key, unit));
+    info_key TEXT NOT NULL,
+    info_value TEXT NOT NULL,
+    info_unit TEXT,
+    PRIMARY KEY (data_id, info_key, info_unit),
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
 
 CREATE INDEX IF NOT EXISTS idx_datainfo_data ON DataInfo (data_id);
-CREATE INDEX IF NOT EXISTS idx_datainfo_key ON DataInfo (key);
+CREATE INDEX IF NOT EXISTS idx_datainfo_key ON DataInfo (info_key);
 
 -- =========================
--- AnalysisRuns
+-- Analyses
 -- =========================
-CREATE TABLE IF NOT EXISTS AnalysisRuns (
+CREATE TABLE IF NOT EXISTS Analyses (
     analysis_id INTEGER PRIMARY KEY,
-    session_id INTEGER NOT NULL,
+    repeat_id INTEGER NOT NULL,
     analysis_type TEXT NOT NULL,   -- 'peak_detection'
-    analysis_index INTEGER NOT NULL,
+    instance_no INTEGER NOT NULL,
     algorithm TEXT NOT NULL,
     version TEXT NOT NULL,
     created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (session_id) REFERENCES MeasurementSessions(session_id) ON DELETE CASCADE,
-    UNIQUE (session_id, analysis_type, analysis_index));
+    FOREIGN KEY (repeat_id) REFERENCES Repeat(repeat_id) ON DELETE CASCADE,
+    UNIQUE (repeat_id, analysis_type, instance_no));
 
-CREATE INDEX IF NOT EXISTS idx_analysis_session ON AnalysisRuns (session_id);
-CREATE INDEX IF NOT EXISTS idx_analysis_type ON AnalysisRuns (analysis_type);
+CREATE INDEX IF NOT EXISTS idx_analysis_repeat ON Analyses (repeat_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_type ON Analyses (analysis_type);
 
 -- =========================
--- AnalysisInputs
+-- AnalysisSources
 -- =========================
-CREATE TABLE IF NOT EXISTS AnalysisInputs (
+CREATE TABLE IF NOT EXISTS AnalysisSources (
     analysis_id INTEGER NOT NULL,
     data_id INTEGER NOT NULL,
     PRIMARY KEY (analysis_id, data_id),
-    FOREIGN KEY (analysis_id) REFERENCES AnalysisRuns(analysis_id) ON DELETE CASCADE,
-    FOREIGN KEY (data_id) REFERENCES MeasurementData(data_id) ON DELETE CASCADE);
+    FOREIGN KEY (analysis_id) REFERENCES Analyses(analysis_id) ON DELETE CASCADE,
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
 
-CREATE INDEX IF NOT EXISTS idx_analysisinput_analysis ON AnalysisInputs (analysis_id);
-CREATE INDEX IF NOT EXISTS idx_analysisinput_data ON AnalysisInputs (data_id);
+CREATE INDEX IF NOT EXISTS idx_analysisinput_analysis ON AnalysisSources (analysis_id);
+CREATE INDEX IF NOT EXISTS idx_analysisinput_data ON AnalysisSources (data_id);
 
 -- =========================
--- AnalysisFeatures
+-- Features
 -- =========================
-CREATE TABLE IF NOT EXISTS AnalysisFeatures (
+CREATE TABLE IF NOT EXISTS Features (
     feature_id INTEGER PRIMARY KEY,
     analysis_id INTEGER NOT NULL,
     feature_type TEXT NOT NULL,     -- 'peak', 'valley'
-    feature_index INTEGER NOT NULL, -- 0,1,2...
-    FOREIGN KEY (analysis_id) REFERENCES AnalysisRuns(analysis_id) ON DELETE CASCADE,
-    UNIQUE (analysis_id, feature_type, feature_index));
+    feature_idx INTEGER NOT NULL, -- 0,1,2...
+    FOREIGN KEY (analysis_id) REFERENCES Analyses(analysis_id) ON DELETE CASCADE,
+    UNIQUE (analysis_id, feature_type, feature_idx));
 
-CREATE INDEX IF NOT EXISTS idx_feature_analysis ON AnalysisFeatures (analysis_id);
-CREATE INDEX IF NOT EXISTS idx_feature_type ON AnalysisFeatures (feature_type);
+CREATE INDEX IF NOT EXISTS idx_feature_analysis ON Features (analysis_id);
+CREATE INDEX IF NOT EXISTS idx_feature_type ON Features (feature_type);
 
 -- =========================
--- FeatureValues
+-- FeatureMetrics
 -- =========================
-CREATE TABLE IF NOT EXISTS FeatureValues (
-    value_id INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS FeatureMetrics (
+    metric_id INTEGER PRIMARY KEY,
     feature_id INTEGER NOT NULL,
-    key TEXT NOT NULL,      -- 'wavelength', 'intensity', 'fwhm'
-    value REAL NOT NULL,
-    unit TEXT,
+    metric_key TEXT NOT NULL,      -- 'wavelength', 'intensity', 'fwhm'
+    metric_value REAL NOT NULL,
+    metric_unit TEXT,
 
-    FOREIGN KEY (feature_id) REFERENCES AnalysisFeatures(feature_id) ON DELETE CASCADE,
-    UNIQUE (feature_id, key, unit));
+    FOREIGN KEY (feature_id) REFERENCES Features(feature_id) ON DELETE CASCADE,
+    UNIQUE (feature_id, metric_key, metric_unit));
 
-CREATE INDEX IF NOT EXISTS idx_value_feature ON FeatureValues (feature_id);
-CREATE INDEX IF NOT EXISTS idx_value_feature_key ON FeatureValues (feature_id, key);
-CREATE INDEX IF NOT EXISTS idx_value_key ON FeatureValues (key);
-CREATE INDEX IF NOT EXISTS idx_value_key_value ON FeatureValues (key, value);
+CREATE INDEX IF NOT EXISTS idx_value_feature ON FeatureMetrics (feature_id);
+CREATE INDEX IF NOT EXISTS idx_value_feature_key ON FeatureMetrics (feature_id, metric_key);
+CREATE INDEX IF NOT EXISTS idx_value_key ON FeatureMetrics (metric_key);
+CREATE INDEX IF NOT EXISTS idx_value_key_value ON FeatureMetrics (metric_key, metric_value);

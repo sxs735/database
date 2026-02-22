@@ -148,7 +148,7 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     
     # 檢查是否找到足夠的谷值
     if len(valley_idx) < 2:
-        return {'Extinction Ratio': ([], 'dB'),
+        return ({'Extinction Ratio': ([], 'dB'),
                 'FSRnm': ([], 'nm'),
                 'FSRGHz': ([], 'GHz'),
                 'FWHMnm': ([], 'nm'),
@@ -156,7 +156,9 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
                 'Q factor': ([], ''),
                 'valley_wavelength': ([], 'nm'),
                 'valley_frequency': ([], 'THz'),
-                'valley_loss': ([], 'dB')}
+                'valley_loss': ([], 'dB')},
+                inspect.currentframe().f_code.co_name, 
+                version)
     
     wavelength_x = wavelength[valley_idx]
     frequency_x = frequency[valley_idx]
@@ -186,13 +188,13 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     Q = wavelength_x / FWHMnm
     
     return ({'Extinction Ratio': (ER, 'dB'),
-            'FSRnm': (FSRnm.tolist(), 'nm'),
-            'FSRGHz': (FSRGHz.tolist(), 'GHz'),
-            'FWHMnm': (FWHMnm.tolist(), 'nm'),
-            'FWHMGHz': (FWHMGHz.tolist(), 'GHz'),
-            'Q factor': (Q.tolist(), ''),
-            'valley_wavelength': (wavelength_x.tolist(), 'nm'),
-            'valley_frequency': (frequency_x.tolist(), 'THz')},
+            'FSRnm': (np.round(FSRnm, 3).tolist(), 'nm'),
+            'FSRGHz': (np.round(FSRGHz, 3).tolist(), 'GHz'),
+            'FWHMnm': (np.round(FWHMnm, 3).tolist(), 'nm'),
+            'FWHMGHz': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
+            'Q factor': (np.round(Q, 0).tolist(), ''),
+            'valley_wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
+            'valley_frequency': (np.round(frequency_x, 3).tolist(), 'THz')},
             inspect.currentframe().f_code.co_name, 
             version)
 
@@ -240,6 +242,36 @@ def MRM_SSRF_analysis(frequency,
     bandwidth = frequency_x2 - reference_frequency
 
     result = {'bandwidth': (bandwidth, 'GHz')}
+
+    return (result,
+            inspect.currentframe().f_code.co_name,
+            version)
+
+def MRM_OMA_analysis(vh_path, v0_path, start=1305, end=1315):
+    version = '1.0.0'
+    _,vh = read_spectrum(vh_path)
+    _,v0 = read_spectrum(v0_path)
+    
+    start_idx = np.abs(v0[:,0] - start).argmin()
+    end_idx = np.abs(v0[:,0] - end).argmin()
+    vh = vh[start_idx:end_idx]
+    v0 = v0[start_idx:end_idx]
+    ref_i = 3 if v0.shape[1] == 5 else 2
+    wavelength = v0[:, 0]
+    loss_vh =vh[:, ref_i] - vh[:, 1]
+    loss_v0 =v0[:, ref_i] - v0[:, 1]
+    diffT = 10**(loss_vh/10)-10**(loss_v0/10)
+    vaild_value = ~np.isnan(diffT)
+    diffT = diffT[vaild_value]
+    loss_v0  = loss_v0[vaild_value]
+    wavelength = wavelength[vaild_value]
+    #diffT = savgol_filter(diffT,17,3)
+    oma_wl = wavelength[diffT.argmax()]
+    valley_wl = wavelength[loss_v0.argmin()]
+    detuning =  oma_wl-valley_wl
+    result = {'oma wavelength': (round(oma_wl,3), 'nm'),
+              'valley wavelength': (round(valley_wl,3), 'nm'),
+              'detuning': (round(detuning,3), 'nm')}
 
     return (result,
             inspect.currentframe().f_code.co_name,

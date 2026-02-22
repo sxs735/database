@@ -7,14 +7,14 @@ from database_api import DatabaseAPI
 from datetime import datetime, timedelta
 
 
-def example_1_create_database():
+def example_1_create_db():
     """範例 1: 創建資料庫"""
     print("=" * 50)
     print("範例 1: 創建資料庫")
     print("=" * 50)
     
     db = DatabaseAPI("example.db")
-    db.create_database("schema.sql")
+    db.create_db("schema.sql")
     db.close()
     
     print("✓ 資料庫創建完成\n")
@@ -36,23 +36,24 @@ def example_2_insert_basic_data():
         print(f"✓ 插入 DUT，ID: {dut_id}")
         
         # 插入測量會話
-        session_id = db.insert_measurement_session(dut_id=dut_id,
-                                                   session_name="光譜測量_2026_01_30",
-                                                   operator="張三",
-                                                   system_version="v1.0",
-                                                   notes="第一次測量")
+        session_id = db.insert_session(dut_id=dut_id,
+                               session_name="光譜測量_2026_01_30",
+                               operator="張三",
+                               system="v1.0",
+                               notes="第一次測量")
         print(f"✓ 插入測量會話，ID: {session_id}")
         
         # 插入實驗條件（支援無單位和有單位兩種格式）
-        db.insert_experimental_conditions(session_id, {'temperature': (25.0, '°C'),
+        db.insert_conditions(session_id, {'temperature': (25.0, '°C'),
                                                        'voltage': (3.3, 'V'),
                                                        'current': (0.1, 'A')})
         print(f"✓ 插入實驗條件")
         
         # 插入測量數據
-        data_id = db.insert_measurement_data(session_id=session_id,
-                                             data_type="spectrum",
-                                             file_path="/data/spectrum_001.csv")
+        data_id = db.insert_rawdata_file(session_id=session_id,
+                             repeat_no=1,
+                             data_type="spectrum",
+                             file_path="/data/spectrum_001.csv")
         print(f"✓ 插入測量數據，ID: {data_id}\n")
 
         # 插入測量數據資訊（支援無單位和有單位兩種格式）
@@ -74,28 +75,30 @@ def example_3_insert_analysis_data():
         session_id = 1
         
         # 創建分析執行
-        analysis_id = db.insert_analysis_run(session_id=session_id,
+        analysis_id = db.insert_analysis(session_id=session_id,
+                     repeat_no=1,
                              analysis_type="peak_detection",
-                             analysis_index=0,
+                             instance_no=0,
                              algorithm="peak_detector",
                              version="1.0.0")
         print(f"✓ 插入分析執行，ID: {analysis_id}")
 
         # 將測量數據綁定為分析輸入
-        data_list = db.get_measurement_data_by_session(session_id)
+        data_list = db.select_rawdata_by_session_id(session_id)
         if data_list:
             data_ids = [item['data_id'] for item in data_list]
-            db.insert_analysis_inputs(analysis_id, data_ids)
+            for data_id in data_ids:
+                db.insert_sources(analysis_id, data_id)
             print(f"✓ 綁定 {len(data_ids)} 筆測量數據為分析輸入")
         
         # 插入檢測到的峰值
         for i in range(3):  # 假設檢測到 3 個峰值
-            feature_id = db.insert_analysis_feature(analysis_id=analysis_id,
+            feature_id = db.insert_feature(analysis_id=analysis_id,
                                                     feature_type="peak",
-                                                    feature_index=i)
+                                                    feature_idx=i)
             
             # 為每個峰值插入特徵值（支援無單位和有單位兩種格式）
-            db.insert_feature_values(feature_id, {'wavelength': (1550.0 + i * 10, 'nm'),
+            db.insert_metrics(feature_id, {'wavelength': (1550.0 + i * 10, 'nm'),
                                                   'intensity': (100.0 - i * 5, 'dBm'),
                                                   'fwhm': (2.5 + i * 0.5, 'nm')})
             print(f"✓ 插入峰值 {i+1}，特徵 ID: {feature_id}")
@@ -111,7 +114,7 @@ def example_4_query_data():
     
     with DatabaseAPI("example.db") as db:
         # 查詢所有 DUT
-        duts = db.get_duts()
+        duts = db.select_list_duts()
         print(f"✓ 找到 {len(duts)} 個 DUT:")
         for dut in duts:
             print(f"  - DUT_id: {dut['DUT_id']}, Wafer: {dut['wafer']}, "
@@ -120,7 +123,7 @@ def example_4_query_data():
         # 查詢特定 DUT 的所有會話
         if duts:
             dut_id = duts[0]['DUT_id']
-            sessions = db.get_sessions_by_dut(dut_id)
+            sessions = db.select_sessions_by_dut_id(dut_id)
             print(f"\n✓ DUT {dut_id} 有 {len(sessions)} 個測量會話:")
             for session in sessions:
                 print(f"  - Session ID: {session['session_id']}, "
@@ -130,7 +133,7 @@ def example_4_query_data():
         # 查詢實驗條件
         if sessions:
             session_id = sessions[0]['session_id']
-            conditions = db.get_conditions_dict(session_id)
+            conditions = db.select_conditions_dict_by_session_id(session_id)
             print(f"\n✓ 會話 {session_id} 的實驗條件:")
             for key, (value, unit) in conditions.items():
                 unit_text = f" {unit}" if unit else ""
@@ -139,10 +142,10 @@ def example_4_query_data():
         # 查詢測量數據資訊
         if sessions:
             session_id = sessions[0]['session_id']
-            data_list = db.get_measurement_data_by_session(session_id)
+            data_list = db.select_rawdata_by_session_id(session_id)
             if data_list:
                 data_id = data_list[0]['data_id']
-                info = db.get_data_info_dict(data_id)
+                info = db.select_datainfo_dict_by_data_id(data_id)
                 print(f"\n✓ 測量數據 {data_id} 的資訊:")
                 for key, (value, unit) in info.items():
                     unit_text = f" {unit}" if unit else ""
@@ -159,7 +162,7 @@ def example_5_query_full_session():
     
     with DatabaseAPI("example.db") as db:
         # 獲取完整的會話資訊
-        full_info = db.get_session_full_info(session_id=1)
+        full_info = db.select_session_details(session_id=1)
         
         if full_info:
             print(f"✓ 會話名稱: {full_info['session_name']}")
@@ -177,7 +180,7 @@ def example_5_query_full_session():
             print(f"\n  測量數據:")
             for data in full_info['measurement_data']:
                 print(f"    - 類型: {data['data_type']}, 路徑: {data['file_path']}")
-                info = db.get_data_info_dict(data['data_id'])
+                info = db.select_datainfo_dict_by_data_id(data['data_id'])
                 if info:
                     print(f"      資訊:")
                     for key, (value, unit) in info.items():
@@ -207,7 +210,7 @@ def example_6_search_features():
     
     with DatabaseAPI("example.db") as db:
         # 搜索波長在 1550-1560 nm 範圍內的特徵
-        features = db.search_features_by_value(key='wavelength',
+        features = db.select_metrics_by_value_range(key='wavelength',
                                                min_value=1550.0,
                                                max_value=1560.0,
                                                unit='nm')
@@ -264,20 +267,20 @@ def example_8_batch_insert():
             
             # 為每個 DUT 創建多個測量會話
             for j in range(2):
-                session_id = db.insert_measurement_session(dut_id=dut_id,
+                session_id = db.insert_session(dut_id=dut_id,
                                                            session_name=f"測量_{i+1}_{j+1}",
                                                            operator="李四",
-                                                           system_version="v1.0")
+                                                           system="v1.0")
                 
                 # 添加實驗條件（支援有單位格式）
-                db.insert_experimental_conditions(session_id, {'temperature': (25.0 + i, '°C'),
+                db.insert_conditions(session_id, {'temperature': (25.0 + i, '°C'),
                                                                'voltage': (3.3 + j * 0.1, 'V')})
                 
                 print(f"✓ 插入 DUT {i+1} 的會話 {j+1}")
         
         print(f"\n批量插入完成")
         stats = db.get_database_stats()
-        print(f"現在有 {stats['DUT']} 個 DUT，{stats['MeasurementSessions']} 個會話")
+        print(f"現在有 {stats['DUT']} 個 DUT，{stats[db.TABLE_SESSIONS]} 個會話")
         print()
 
 
@@ -291,16 +294,17 @@ def example_9_custom_query():
         # 複雜的聯結查詢：找出所有有分析結果的會話
         sql = """
         SELECT DISTINCT
-            ms.session_id,
-            ms.session_name,
+            s.session_id,
+            s.session_name,
             d.wafer,
             d.die,
-            COUNT(af.feature_id) as feature_count
-        FROM MeasurementSessions ms
-        JOIN DUT d ON ms.DUT_id = d.DUT_id
-        LEFT JOIN AnalysisRuns ar ON ms.session_id = ar.session_id
-        LEFT JOIN AnalysisFeatures af ON ar.analysis_id = af.analysis_id
-        GROUP BY ms.session_id
+            COUNT(f.feature_id) AS feature_count
+        FROM Sessions s
+        JOIN DUT d ON s.DUT_id = d.DUT_id
+        LEFT JOIN Repeat r ON s.session_id = r.session_id
+        LEFT JOIN Analyses ar ON r.repeat_id = ar.repeat_id
+        LEFT JOIN Features f ON ar.analysis_id = f.analysis_id
+        GROUP BY s.session_id
         """
         
         results = db.query(sql)
@@ -334,9 +338,9 @@ def example_11_add_column():
     print("=" * 50)
 
     with DatabaseAPI("example.db") as db:
-        added = db.add_column("AnalysisRuns", "version", "TEXT NOT NULL DEFAULT '1.0.0'")
+        added = db.add_column("Analyses", "version", "TEXT NOT NULL DEFAULT '1.0.0'")
         if added:
-            print("✓ 已為 AnalysisRuns 新增 version 欄位")
+            print("✓ 已為 Analyses 新增 version 欄位")
         else:
             print("✓ version 欄位已存在，無需重複新增")
 
@@ -350,7 +354,7 @@ def main():
     print("=" * 50 + "\n")
     
     # 創建資料庫
-    example_1_create_database()
+    example_1_create_db()
     
     # 插入數據
     example_2_insert_basic_data()
