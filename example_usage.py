@@ -29,11 +29,10 @@ def example_2_insert_basic_data():
     with DatabaseAPI("example.db") as db:
         # 插入 DUT
         dut_id = db.insert_dut(wafer="W001",
-                       doe="D001",
-                       die=1,
-                       cage="C1",
-                       device="D001",
-                       client="DemoClient")
+                   doe="D001",
+                   die=1,
+                   cage="C1",
+                   device="D001")
         print(f"✓ 插入 DUT，ID: {dut_id}")
         
         # 插入測量會話
@@ -264,8 +263,7 @@ def example_8_batch_insert():
                                    doe=f"DOE_{i+1}",
                                    die=i+1,
                                    cage=f"C{i+1}",
-                                   device=f"D{i+1:03d}",
-                                   client=f"Client_{i+1}")
+                                   device=f"D{i+1:03d}")
             
             # 為每個 DUT 創建多個測量會話
             for j in range(2):
@@ -282,7 +280,7 @@ def example_8_batch_insert():
         
         print(f"\n批量插入完成")
         stats = db.get_database_stats()
-        print(f"現在有 {stats['DUT']} 個 DUT，{stats[db.TABLE_SESSIONS]} 個會話")
+        print(f"現在有 {stats['DUT']} 個 DUT，{stats[db.TABLE_MEASUREMENTS]} 個會話")
         print()
 
 

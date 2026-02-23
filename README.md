@@ -63,7 +63,7 @@ The API wraps common insert/query/delete patterns.
 
 ```python
 with DatabaseAPI("Measurement.db") as db:
-   dut_id = db.insert_dut(wafer="W001", doe="DOE_A", die=5, cage="C1", device="DEV01", client="Demo")
+   dut_id = db.insert_dut(wafer="W001", doe="DOE_A", die=5, cage="C1", device="DEV01")
    measure_id = db.insert_session(dut_id, session_name="SPCM_20260205")
    data_id = db.insert_rawdata_file(measure_id, session_idx=0, data_type="SPCM", file_path=".../file.csv")
    db.insert_conditions(measure_id, {"temperature": (25, "°C")})

@@ -5,13 +5,12 @@ PRAGMA foreign_keys = ON;
 -- =========================
 CREATE TABLE IF NOT EXISTS DUT (
     DUT_id INTEGER PRIMARY KEY,
-    client TEXT NOT NULL,
     wafer TEXT NOT NULL,
     DOE TEXT NOT NULL,
     die INTEGER NOT NULL,
     cage TEXT NOT NULL,
     device TEXT NOT NULL,
-    UNIQUE (client, wafer, DOE, die, cage, device));
+    UNIQUE (wafer, DOE, die, cage, device));
 
 CREATE INDEX IF NOT EXISTS idx_dut_wafer_die ON DUT (wafer, die);
 
@@ -28,6 +27,8 @@ CREATE TABLE IF NOT EXISTS Measurement (
     notes TEXT,
     FOREIGN KEY (DUT_id) REFERENCES DUT(DUT_id) ON DELETE CASCADE,
     UNIQUE (DUT_id,measure_name));
+
+CREATE INDEX IF NOT EXISTS idx_measure_dut ON Measurement (DUT_id);
 
 -- =========================
 -- Conditions
@@ -53,6 +54,8 @@ CREATE TABLE IF NOT EXISTS MeasureSession (
     UNIQUE (measure_id, session_idx),
     FOREIGN KEY (measure_id) REFERENCES Measurement(measure_id) ON DELETE CASCADE);
 
+CREATE INDEX IF NOT EXISTS idx_session_measure ON MeasureSession (measure_id);
+
 -- =========================
 -- RawDataFiles
 -- =========================
@@ -66,8 +69,7 @@ CREATE TABLE IF NOT EXISTS RawDataFiles (
     FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
     UNIQUE (session_id, file_path));
 
-CREATE INDEX IF NOT EXISTS idx_data_session ON RawDataFiles (session_id);
-CREATE INDEX IF NOT EXISTS idx_data_type ON RawDataFiles (data_type);
+CREATE INDEX IF NOT EXISTS idx_raw_session_type ON RawDataFiles (session_id, data_type);
 
 -- =========================
 -- DataInfo

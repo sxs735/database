@@ -122,20 +122,23 @@ with DatabaseAPI(db_path) as db:
     
     #df_heat_grouped = df_heat.groupby([col for col in df_heat.columns if 'ec' not in col])
     
-#%%    
-    cmd = '''
-    SELECT md.data_id FROM RawDataFiles md
-    JOIN MeasureSession ms ON md.session_id = ms.session_id
-    JOIN DataInfo di ON md.data_id = di.data_id
-    WHERE ms.measure_id = 1
-    AND md.data_type = 'SPCM'
-    AND (
-    (di.Info_key = 'ec1 type'    AND di.Info_value = 'pn') OR
-    (di.Info_key = 'ec1 channel' AND di.Info_value = '1')  OR
-    (di.Info_key = 'ec1 value'   AND di.Info_value = '-900.0')
-    )
-    GROUP BY md.data_id
-    HAVING COUNT(DISTINCT di.Info_key) = 3;'''
+#%%  
+with DatabaseAPI(db_path) as db:  
+    cmd = '''SELECT r.data_id
+             FROM RawDataFiles r
+             WHERE r.session_id = 1
+             AND r.data_type = 'SPCM'
+             AND EXISTS (
+             SELECT 1
+             FROM DataInfo d
+             WHERE d.data_id = r.data_id
+             AND d.info_value LIKE '%pn%');'''
     a = db.query(cmd)
+
+    for d in a:
+        data_id = d['data_id']
+        info = db.select_datainfo_by_data_id(data_id)
+        print(info)
+
     
 # %%
