@@ -18,37 +18,37 @@ with DatabaseAPI(db_path) as db:
 #%%
 with DatabaseAPI(db_path) as db:
     sql = '''
-    SELECT s.session_id,s.DUT_id,s.session_name,s.measured_at
-    FROM Sessions s
+    SELECT m.measure_id, m.DUT_id, m.measure_name, m.measured_at
+    FROM Measurement m
     WHERE NOT EXISTS (
         SELECT 1
         FROM Analyses a
-        JOIN Repeat r ON a.repeat_id = r.repeat_id
-        WHERE r.session_id = s.session_id)
-    ORDER BY s.measured_at'''
+        JOIN MeasureSession ms ON a.session_id = ms.session_id
+        WHERE ms.measure_id = m.measure_id)
+    ORDER BY m.measured_at'''
     result = db.query(sql)
-    session_id_list = [d['session_id'] for d in result]
+    measure_id_list = [d['measure_id'] for d in result]
     session_measurements = []
     total_spcm = 0
-    for session_id in session_id_list:
-        spcm_data = db.select_rawdata_by_session_id(session_id=session_id, data_type="SPCM")
-        session_measurements.append((session_id, spcm_data))
+    for measure_id in measure_id_list:
+        spcm_data = db.select_rawdata_by_session_id(measure_id=measure_id, data_type="SPCM")
+        session_measurements.append((measure_id, spcm_data))
         total_spcm += len(spcm_data)
 
     progress_desc = "Processing SPCM files"
     with tqdm(total=total_spcm, desc=progress_desc, unit="file") as pbar:
-        for session_id, spcm_data in session_measurements:
+        for measure_id, spcm_data in session_measurements:
             for idx, info in enumerate(spcm_data):
                 path = info['file_path']
                 instance_no = idx
-                repeat_no = info['repeat_no']
+                session_idx = info['session_idx']
                 head,data = read_spectrum(path)
                 x = data[:, 0]
                 y = data[:, 3] - data[:, 1]
                 result, algorithm_name, version = MRM_SPCM_analysis(x, y)
                 if len(result['valley_wavelength'][0]) <= 6:
-                    analysis_id = db.insert_analysis(session_id = session_id,
-                                                     repeat_no = repeat_no,
+                    analysis_id = db.insert_analysis(measure_id = measure_id,
+                                                     session_idx = session_idx,
                                                      analysis_type = 'MRM_SPCM_analysis',
                                                      instance_no = instance_no,
                                                      algorithm = algorithm_name,
@@ -76,7 +76,7 @@ from pathlib import Path
 import pandas as pd
 %matplotlib qt
 with DatabaseAPI(db_path) as db:
-    spcm_data = db.select_rawdata_by_session_id(session_id = 5, data_type="SPCM")
+    spcm_data = db.select_rawdata_by_session_id(measure_id = 5, data_type="SPCM")
     data_info = [(id,db.select_datainfo_dict_by_data_id(id)) for id in [d['data_id'] for d in spcm_data]]
     spcm = []
     for spcm_info in spcm_data:
@@ -125,9 +125,9 @@ with DatabaseAPI(db_path) as db:
 #%%    
     cmd = '''
     SELECT md.data_id FROM RawDataFiles md
-    JOIN Repeat r ON md.repeat_id = r.repeat_id
+    JOIN MeasureSession ms ON md.session_id = ms.session_id
     JOIN DataInfo di ON md.data_id = di.data_id
-    WHERE r.session_id = 1
+    WHERE ms.measure_id = 1
     AND md.data_type = 'SPCM'
     AND (
     (di.Info_key = 'ec1 type'    AND di.Info_value = 'pn') OR

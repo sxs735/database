@@ -29,29 +29,30 @@ def example_2_insert_basic_data():
     with DatabaseAPI("example.db") as db:
         # 插入 DUT
         dut_id = db.insert_dut(wafer="W001",
-                               doe="D001",
-                               die=1,
-                               cage="C1",
-                               device="D001")
+                       doe="D001",
+                       die=1,
+                       cage="C1",
+                       device="D001",
+                       client="DemoClient")
         print(f"✓ 插入 DUT，ID: {dut_id}")
         
         # 插入測量會話
-        session_id = db.insert_session(dut_id=dut_id,
+        measure_id = db.insert_session(dut_id=dut_id,
                                session_name="光譜測量_2026_01_30",
                                operator="張三",
                                system="v1.0",
                                notes="第一次測量")
-        print(f"✓ 插入測量會話，ID: {session_id}")
+        print(f"✓ 插入測量會話，ID: {measure_id}")
         
         # 插入實驗條件（支援無單位和有單位兩種格式）
-        db.insert_conditions(session_id, {'temperature': (25.0, '°C'),
+        db.insert_conditions(measure_id, {'temperature': (25.0, '°C'),
                                                        'voltage': (3.3, 'V'),
                                                        'current': (0.1, 'A')})
         print(f"✓ 插入實驗條件")
         
         # 插入測量數據
-        data_id = db.insert_rawdata_file(session_id=session_id,
-                             repeat_no=1,
+        data_id = db.insert_rawdata_file(measure_id=measure_id,
+                     session_idx=1,
                              data_type="spectrum",
                              file_path="/data/spectrum_001.csv")
         print(f"✓ 插入測量數據，ID: {data_id}\n")
@@ -71,12 +72,12 @@ def example_3_insert_analysis_data():
     print("=" * 50)
     
     with DatabaseAPI("example.db") as db:
-        # 假設我們已經有一個 session_id = 1
-        session_id = 1
+        # 假設我們已經有一個 measure_id = 1
+        measure_id = 1
         
         # 創建分析執行
-        analysis_id = db.insert_analysis(session_id=session_id,
-                     repeat_no=1,
+        analysis_id = db.insert_analysis(measure_id=measure_id,
+                 session_idx=1,
                              analysis_type="peak_detection",
                              instance_no=0,
                              algorithm="peak_detector",
@@ -84,7 +85,7 @@ def example_3_insert_analysis_data():
         print(f"✓ 插入分析執行，ID: {analysis_id}")
 
         # 將測量數據綁定為分析輸入
-        data_list = db.select_rawdata_by_session_id(session_id)
+        data_list = db.select_rawdata_by_session_id(measure_id)
         if data_list:
             data_ids = [item['data_id'] for item in data_list]
             for data_id in data_ids:
@@ -120,29 +121,29 @@ def example_4_query_data():
             print(f"  - DUT_id: {dut['DUT_id']}, Wafer: {dut['wafer']}, "
                   f"Die: {dut['die']}, Device: {dut['device']}")
         
-        # 查詢特定 DUT 的所有會話
+        # 查詢特定 DUT 的所有 Measurement
         if duts:
             dut_id = duts[0]['DUT_id']
             sessions = db.select_sessions_by_dut_id(dut_id)
             print(f"\n✓ DUT {dut_id} 有 {len(sessions)} 個測量會話:")
             for session in sessions:
-                print(f"  - Session ID: {session['session_id']}, "
-                      f"名稱: {session['session_name']}, "
+                print(f"  - Measure ID: {session['measure_id']}, "
+                      f"名稱: {session['measure_name']}, "
                       f"操作員: {session['operator']}")
         
         # 查詢實驗條件
         if sessions:
-            session_id = sessions[0]['session_id']
-            conditions = db.select_conditions_dict_by_session_id(session_id)
-            print(f"\n✓ 會話 {session_id} 的實驗條件:")
+            measure_id = sessions[0]['measure_id']
+            conditions = db.select_conditions_dict_by_session_id(measure_id)
+            print(f"\n✓ Measurement {measure_id} 的實驗條件:")
             for key, (value, unit) in conditions.items():
                 unit_text = f" {unit}" if unit else ""
                 print(f"  - {key}: {value}{unit_text}")
 
         # 查詢測量數據資訊
         if sessions:
-            session_id = sessions[0]['session_id']
-            data_list = db.select_rawdata_by_session_id(session_id)
+            measure_id = sessions[0]['measure_id']
+            data_list = db.select_rawdata_by_session_id(measure_id)
             if data_list:
                 data_id = data_list[0]['data_id']
                 info = db.select_datainfo_dict_by_data_id(data_id)
@@ -161,11 +162,11 @@ def example_5_query_full_session():
     print("=" * 50)
     
     with DatabaseAPI("example.db") as db:
-        # 獲取完整的會話資訊
-        full_info = db.select_session_details(session_id=1)
+        # 獲取完整的 Measurement 資訊
+        full_info = db.select_session_details(measure_id=1)
         
         if full_info:
-            print(f"✓ 會話名稱: {full_info['session_name']}")
+            print(f"✓ Measurement 名稱: {full_info['measure_name']}")
             print(f"✓ 操作員: {full_info['operator']}")
             print(f"\n  DUT 資訊:")
             print(f"    - Wafer: {full_info['dut']['wafer']}")
@@ -236,11 +237,11 @@ def example_7_delete_data():
         for table, count in stats.items():
             print(f"  {table}: {count} 筆記錄")
         
-        # 刪除一個會話（會級聯刪除相關的所有數據）
-        # deleted = db.delete_session(session_id=1)
+        # 刪除一個 Measurement（會級聯刪除相關的所有數據）
+        # deleted = db.delete_session(measure_id=1)
         # print(f"\n✓ 刪除了 {deleted} 個會話")
         
-        # 刪除舊的會話（範例：刪除一週前的數據）
+        # 刪除舊的 Measurement（範例：刪除一週前的數據）
         # one_week_ago = datetime.now() - timedelta(days=7)
         # deleted = db.delete_old_sessions(one_week_ago)
         # print(f"✓ 刪除了 {deleted} 個舊會話")
@@ -263,17 +264,18 @@ def example_8_batch_insert():
                                    doe=f"DOE_{i+1}",
                                    die=i+1,
                                    cage=f"C{i+1}",
-                                   device=f"D{i+1:03d}")
+                                   device=f"D{i+1:03d}",
+                                   client=f"Client_{i+1}")
             
             # 為每個 DUT 創建多個測量會話
             for j in range(2):
-                session_id = db.insert_session(dut_id=dut_id,
+                measure_id = db.insert_session(dut_id=dut_id,
                                                            session_name=f"測量_{i+1}_{j+1}",
                                                            operator="李四",
                                                            system="v1.0")
                 
                 # 添加實驗條件（支援有單位格式）
-                db.insert_conditions(session_id, {'temperature': (25.0 + i, '°C'),
+                db.insert_conditions(measure_id, {'temperature': (25.0 + i, '°C'),
                                                                'voltage': (3.3 + j * 0.1, 'V')})
                 
                 print(f"✓ 插入 DUT {i+1} 的會話 {j+1}")
@@ -291,27 +293,27 @@ def example_9_custom_query():
     print("=" * 50)
     
     with DatabaseAPI("example.db") as db:
-        # 複雜的聯結查詢：找出所有有分析結果的會話
+        # 複雜的聯結查詢：找出所有有分析結果的 Measurement
         sql = """
         SELECT DISTINCT
-            s.session_id,
-            s.session_name,
+            m.measure_id,
+            m.measure_name,
             d.wafer,
             d.die,
             COUNT(f.feature_id) AS feature_count
-        FROM Sessions s
-        JOIN DUT d ON s.DUT_id = d.DUT_id
-        LEFT JOIN Repeat r ON s.session_id = r.session_id
-        LEFT JOIN Analyses ar ON r.repeat_id = ar.repeat_id
+        FROM Measurement m
+        JOIN DUT d ON m.DUT_id = d.DUT_id
+        LEFT JOIN MeasureSession ms ON m.measure_id = ms.measure_id
+        LEFT JOIN Analyses ar ON ms.session_id = ar.session_id
         LEFT JOIN Features f ON ar.analysis_id = f.analysis_id
-        GROUP BY s.session_id
+        GROUP BY m.measure_id
         """
         
         results = db.query(sql)
         
-        print(f"✓ 找到 {len(results)} 個會話:")
+        print(f"✓ 找到 {len(results)} 個 Measurement:")
         for row in results:
-            print(f"  - 會話: {row['session_name']}, "
+            print(f"  - 會話: {row['measure_name']}, "
                   f"Wafer: {row['wafer']}, "
                   f"特徵數: {row['feature_count']}")
         

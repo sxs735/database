@@ -5,67 +5,68 @@ PRAGMA foreign_keys = ON;
 -- =========================
 CREATE TABLE IF NOT EXISTS DUT (
     DUT_id INTEGER PRIMARY KEY,
+    client TEXT NOT NULL,
     wafer TEXT NOT NULL,
     DOE TEXT NOT NULL,
     die INTEGER NOT NULL,
     cage TEXT NOT NULL,
     device TEXT NOT NULL,
-    UNIQUE (wafer, DOE, die, cage, device));
+    UNIQUE (client, wafer, DOE, die, cage, device));
 
 CREATE INDEX IF NOT EXISTS idx_dut_wafer_die ON DUT (wafer, die);
 
 -- =========================
--- Sessions
+-- Measurement
 -- =========================
-CREATE TABLE IF NOT EXISTS Sessions (
-    session_id INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS Measurement (
+    measure_id INTEGER PRIMARY KEY,
     DUT_id INTEGER NOT NULL,
-    session_name TEXT,
+    measure_name TEXT,
     measured_at DATETIME,
     operator TEXT,
     system TEXT,
     notes TEXT,
     FOREIGN KEY (DUT_id) REFERENCES DUT(DUT_id) ON DELETE CASCADE,
-    UNIQUE (DUT_id,session_name));
-
--- =========================
--- Repeat
--- =========================
-CREATE TABLE IF NOT EXISTS Repeat (
-    repeat_id INTEGER PRIMARY KEY,
-    session_id INTEGER NOT NULL,
-    repeat_no INTEGER NOT NULL,
-    UNIQUE (session_id, repeat_no),
-    FOREIGN KEY (session_id) REFERENCES Sessions(session_id) ON DELETE CASCADE);
+    UNIQUE (DUT_id,measure_name));
 
 -- =========================
 -- Conditions
 -- =========================
 CREATE TABLE IF NOT EXISTS Conditions (
     condition_id INTEGER PRIMARY KEY,
-    session_id INTEGER NOT NULL,
+    measure_id INTEGER NOT NULL,
     setting_parameters TEXT NOT NULL,
     setting_value REAL NOT NULL,
     parameters_unit TEXT,
-    FOREIGN KEY (session_id) REFERENCES Sessions(session_id) ON DELETE CASCADE,
-    UNIQUE (session_id, setting_parameters, parameters_unit));
+    FOREIGN KEY (measure_id) REFERENCES Measurement(measure_id) ON DELETE CASCADE,
+    UNIQUE (measure_id, setting_parameters, parameters_unit));
 
-CREATE INDEX IF NOT EXISTS idx_condition_session ON Conditions (session_id);
+CREATE INDEX IF NOT EXISTS idx_condition_measure ON Conditions (measure_id);
+
+-- =========================
+-- MeasureSession
+-- =========================
+CREATE TABLE IF NOT EXISTS MeasureSession (
+    session_id INTEGER PRIMARY KEY,
+    measure_id INTEGER NOT NULL,
+    session_idx INTEGER NOT NULL,
+    UNIQUE (measure_id, session_idx),
+    FOREIGN KEY (measure_id) REFERENCES Measurement(measure_id) ON DELETE CASCADE);
 
 -- =========================
 -- RawDataFiles
 -- =========================
 CREATE TABLE IF NOT EXISTS RawDataFiles (
     data_id INTEGER PRIMARY KEY,
-    repeat_id INTEGER NOT NULL,
+    session_id INTEGER NOT NULL,
     data_type TEXT NOT NULL,     -- e.g. 'spectrum'
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
     recorded_at DATETIME,
-    FOREIGN KEY (repeat_id) REFERENCES Repeat(repeat_id) ON DELETE CASCADE,
-    UNIQUE (repeat_id, file_path));
+    FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
+    UNIQUE (session_id, file_path));
 
-CREATE INDEX IF NOT EXISTS idx_data_repeat ON RawDataFiles (repeat_id);
+CREATE INDEX IF NOT EXISTS idx_data_session ON RawDataFiles (session_id);
 CREATE INDEX IF NOT EXISTS idx_data_type ON RawDataFiles (data_type);
 
 -- =========================
@@ -87,16 +88,16 @@ CREATE INDEX IF NOT EXISTS idx_datainfo_key ON DataInfo (info_key);
 -- =========================
 CREATE TABLE IF NOT EXISTS Analyses (
     analysis_id INTEGER PRIMARY KEY,
-    repeat_id INTEGER NOT NULL,
+    session_id INTEGER NOT NULL,
     analysis_type TEXT NOT NULL,   -- 'peak_detection'
     instance_no INTEGER NOT NULL,
     algorithm TEXT NOT NULL,
     version TEXT NOT NULL,
     created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (repeat_id) REFERENCES Repeat(repeat_id) ON DELETE CASCADE,
-    UNIQUE (repeat_id, analysis_type, instance_no));
+    FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
+    UNIQUE (session_id, analysis_type, instance_no));
 
-CREATE INDEX IF NOT EXISTS idx_analysis_repeat ON Analyses (repeat_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_session ON Analyses (session_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_type ON Analyses (analysis_type);
 
 -- =========================

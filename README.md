@@ -40,7 +40,7 @@ pip install -r requirements.txt  # or install the packages listed above
    ```
 
 3. **Run analyses**
-   `main.py` demonstrates how to iterate through unprocessed sessions, level spectra, locate valleys, compute FSR/FWHM/Q, and store results in `Analyses`, `Features`, and `FeatureMetrics` while linking the raw data via `AnalysisSources`.
+   `main.py` demonstrates how to iterate through unprocessed measurements, level spectra, locate valleys, compute FSR/FWHM/Q, and store results in `Analyses`, `Features`, and `FeatureMetrics` while linking the raw data via `AnalysisSources`.
 
 4. **Export**
    ```python
@@ -50,7 +50,8 @@ pip install -r requirements.txt  # or install the packages listed above
 
 ## Key Database Concepts
 
-- **Analyses**: each run is scoped by `(session_id, analysis_type, instance_no)` for multi-pass workflows.
+- **Measurement vs. MeasureSession**: `Measurement` captures DUT-level metadata, while `MeasureSession` indexes each repeat (`session_idx`) under a measurement and is referenced by data files and analyses.
+- **Analyses**: each run is scoped by `(session_id, analysis_type, instance_no)` where `session_id` points to a `MeasureSession` row.
 - **AnalysisSources**: many-to-many bridge recording which `RawDataFiles` entries fed a given analysis run.
 - **Features / FeatureMetrics**: hierarchical storage for peaks, valleys, or other observables with arbitrary key/value units.
 
@@ -62,15 +63,16 @@ The API wraps common insert/query/delete patterns.
 
 ```python
 with DatabaseAPI("Measurement.db") as db:
-   dut_id = db.add_dut("W001", "DOE_A", 5, "C1", "DEV01")
-   session_id = db.add_session(dut_id, session_name="SPCM_20260205")
-   data_id = db.add_data_file(session_id, "SPCM", ".../file.csv")
-   db.add_conditions(session_id, {"temperature": (25, "°C")})
-   db.add_analysis(session_id,
-               "basic_spectrum_analysis",
-               analysis_index=0,
-               algorithm="valley_scan",
-               version="1.0.0")
+   dut_id = db.insert_dut(wafer="W001", doe="DOE_A", die=5, cage="C1", device="DEV01", client="Demo")
+   measure_id = db.insert_session(dut_id, session_name="SPCM_20260205")
+   data_id = db.insert_rawdata_file(measure_id, session_idx=0, data_type="SPCM", file_path=".../file.csv")
+   db.insert_conditions(measure_id, {"temperature": (25, "°C")})
+   db.insert_analysis(measure_id,
+                      session_idx=0,
+                      analysis_type="basic_spectrum_analysis",
+                      instance_no=0,
+                      algorithm="valley_scan",
+                      version="1.0.0")
 ```
 
 Query helpers include `get_session_details()`, `list_analysis_inputs()`, and `search_metrics()`.
@@ -91,7 +93,7 @@ with DatabaseAPI("Measurement.db") as db:
    ```
 3. The script will:
    - Import new measurement folders (comment/uncomment as needed).
-   - Process sessions lacking `Analyses` and persist computed metrics.
+   - Process measurements lacking `Analyses` and persist computed metrics.
    - Optionally export the current SQLite contents to Excel.
 
 ## Notes
