@@ -1,8 +1,6 @@
 #%%
 from pathlib import Path
 from database_api import DatabaseAPI
-import numpy as np
-from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
 from analysis import *
 from tqdm import tqdm
 
@@ -10,7 +8,7 @@ folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3
 db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
-    db.import_session_folder(folder_path,schema_file="schema.sql")
+    db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
 #%%
 with DatabaseAPI(db_path) as db:
     output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")
@@ -68,76 +66,20 @@ with DatabaseAPI(db_path) as db:
                         })
                 pbar.update(1)
     db.conn.commit()
-
-# %%
-import matplotlib.pyplot as plt
-import time
-from pathlib import Path
-import pandas as pd
-%matplotlib qt
-with DatabaseAPI(db_path) as db:
-    spcm_data = db.select_rawdata_by_session_id(measure_id = 5, data_type="SPCM")
-    data_info = [(id,db.select_datainfo_dict_by_data_id(id)) for id in [d['data_id'] for d in spcm_data]]
-    spcm = []
-    for spcm_info in spcm_data:
-        filename = Path(spcm_info['file_path']).name
-        meta = db.parse_filename(filename)
-        meta.pop('arguments')
-        smu = meta.pop('SMU', [])
-        meta |= dict(item for d in smu for item in d.items())
-        for key, value in list(meta.items()):
-            if all(x in key for x in ('ec','value')):
-                meta[key.split()[0]+' unit'] = meta[key][1]
-                meta[key] = meta[key][0]
-        spcm += [meta]
-    df = pd.DataFrame(spcm,index=[d['data_id'] for d in spcm_data])
-    pn = [ec for ec in {col.split()[0] for col in df.columns if 'ec' in col}
-          if any(df[f'{ec} type'] == 'pn')][0]
-    heat = [ec for ec in {col.split()[0] for col in df.columns if 'ec' in col}
-            if any(df[f'{ec} type'] == 'heat')][0]
-    df_pn = df[df[f'{pn} type'] == 'pn']
-    df_heat = df[df[f'{heat} type'] == 'heat']
-    #pn modulation
-    df_pn_grouped = df_pn.groupby([col for col in df_pn.columns if 'ec' not in col])
-    # if len(df_pn_grouped) > 1:
-    #     print("Warning: Multiple groups found in pn data. Please select the appropriate group.")
-    #     for i, (name, _) in enumerate(df_pn_grouped):
-    #         print(f"Group {i}: {name}")
-    #     select_idx = input("Enter the group number to select: ")
-    #     select_idx = [int(i) for i in select_idx.split(',')]
-    # else:
-    #     select_idx = [0]
-
-    for i, (name, group) in enumerate(df_pn_grouped):
-        group = group.sort_values(by=f'{pn} value')
-        data_id = group.index.values
-        if len(group) > 1:
-            value = group[f'{pn} value'].values
-            vh_id = int(data_id[np.argmax(np.abs(value))])
-            v0_id = int(data_id[np.argmin(np.abs(value))])
-            vh_path = db.select_rawdata_by_data_id(vh_id)['file_path']
-            v0_path = db.select_rawdata_by_data_id(v0_id)['file_path']
-            res = MRM_OMA_analysis(vh_path, v0_path, start=1305, end=1315)
-
-    
-    #df_heat_grouped = df_heat.groupby([col for col in df_heat.columns if 'ec' not in col])
     
 #%%  
 with DatabaseAPI(db_path) as db:  
     cmd = '''SELECT r.data_id
              FROM RawDataFiles r
+             JOIN ElectricInfo e ON e.data_id = r.data_id
              WHERE r.session_id = 1
              AND r.data_type = 'SPCM'
-             AND EXISTS (
-             SELECT 1
-             FROM DataInfo d
-             WHERE d.data_id = r.data_id
-             AND d.info_value LIKE '%pn%');'''
+             AND e.set_mode LIKE '%pn%';'''
     a = db.query(cmd)
 
     for d in a:
         data_id = d['data_id']
-        info = db.select_datainfo_by_data_id(data_id)
+        info = db.select_electric_info_by_data_id(data_id)
         print(info)
 
     

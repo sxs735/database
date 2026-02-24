@@ -36,7 +36,7 @@ def example_2_insert_basic_data():
         print(f"✓ 插入 DUT，ID: {dut_id}")
         
         # 插入測量會話
-        measure_id = db.insert_session(dut_id=dut_id,
+        measure_id = db.insert_measurement(dut_id=dut_id,
                                session_name="光譜測量_2026_01_30",
                                operator="張三",
                                system="v1.0",
@@ -56,12 +56,23 @@ def example_2_insert_basic_data():
                              file_path="/data/spectrum_001.csv")
         print(f"✓ 插入測量數據，ID: {data_id}\n")
 
-        # 插入測量數據資訊（支援無單位和有單位兩種格式）
-        db.insert_data_info(data_id, {
-            'exposure': (1.2, 's'),
-            'gain': (10.0, 'dB')
+        # 插入光學/電性資訊
+        db.insert_optical_info(data_id,
+                               input_channel="1",
+                               output_channel="2",
+                               input_power="0 dBm",
+                               wavelength_start=1525.0,
+                               wavelength_stop=1575.0,
+                               sweep_rate=100.0)
+        db.insert_electric_info(data_id, [
+            {"element": "SMU", "channel": "1", "set_mode": "VOLT", "set_value": 3.3},
+            {"element": "SMU", "channel": "2", "set_mode": "CURR", "set_value": 0.01}
+        ])
+        db.insert_another_info(data_id, {
+            "note": "demo entry",
+            "wavelength_step": (0.01, "nm")
         })
-        print("✓ 插入測量數據資訊")
+        print("✓ 插入光學、電性與其他資訊")
 
 
 def example_3_insert_analysis_data():
@@ -145,11 +156,22 @@ def example_4_query_data():
             data_list = db.select_rawdata_by_session_id(measure_id)
             if data_list:
                 data_id = data_list[0]['data_id']
-                info = db.select_datainfo_dict_by_data_id(data_id)
+                optical = db.select_optical_info_by_data_id(data_id)
+                electric = db.select_electric_info_by_data_id(data_id)
+                another = db.select_another_info_dict_by_data_id(data_id)
                 print(f"\n✓ 測量數據 {data_id} 的資訊:")
-                for key, (value, unit) in info.items():
-                    unit_text = f" {unit}" if unit else ""
-                    print(f"  - {key}: {value}{unit_text}")
+                if optical:
+                    print(f"  - Optical: in={optical['input_channel']}, out={optical['output_channel']}, power={optical['input_power']}, "
+                          f"range={optical['wavelengthStart']}~{optical['wavelengthStop']}, sweepRate={optical['sweepRate']}")
+                if electric:
+                    print("  - Electric:")
+                    for row in electric:
+                        print(f"      channel {row['channel']}: {row['set_mode']} -> {row['set_value']} ({row['element']})")
+                if another:
+                    print("  - Another:")
+                    for key, (value, unit) in another.items():
+                        unit_text = f" {unit}" if unit else ""
+                        print(f"      {key}: {value}{unit_text}")
         
         print()
 
@@ -180,10 +202,16 @@ def example_5_query_full_session():
             print(f"\n  測量數據:")
             for data in full_info['measurement_data']:
                 print(f"    - 類型: {data['data_type']}, 路徑: {data['file_path']}")
-                info = db.select_datainfo_dict_by_data_id(data['data_id'])
-                if info:
-                    print(f"      資訊:")
-                    for key, (value, unit) in info.items():
+                if data.get('optical_info'):
+                    opt = data['optical_info']
+                    print(f"      Optical: in={opt['input_channel']}, out={opt['output_channel']}, power={opt['input_power']}")
+                if data.get('electric_info'):
+                    print("      Electric:")
+                    for row in data['electric_info']:
+                        print(f"        channel {row['channel']}: {row['set_mode']} -> {row['set_value']} ({row['element']})")
+                if data.get('another_info'):
+                    print("      Another:")
+                    for key, (value, unit) in data['another_info'].items():
                         unit_text = f" {unit}" if unit else ""
                         print(f"        {key}: {value}{unit_text}")
             
@@ -267,7 +295,7 @@ def example_8_batch_insert():
             
             # 為每個 DUT 創建多個測量會話
             for j in range(2):
-                measure_id = db.insert_session(dut_id=dut_id,
+                measure_id = db.insert_measurement(dut_id=dut_id,
                                                            session_name=f"測量_{i+1}_{j+1}",
                                                            operator="李四",
                                                            system="v1.0")

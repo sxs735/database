@@ -72,18 +72,44 @@ CREATE TABLE IF NOT EXISTS RawDataFiles (
 CREATE INDEX IF NOT EXISTS idx_raw_session_type ON RawDataFiles (session_id, data_type);
 
 -- =========================
--- DataInfo
+-- OpticalInfo
 -- =========================
-CREATE TABLE IF NOT EXISTS DataInfo (
+CREATE TABLE IF NOT EXISTS OpticalInfo (
+    data_id INTEGER NOT NULL,
+    input_channel TEXT NOT NULL,
+    output_channel TEXT NOT NULL,
+    input_power TEXT NOT NULL,
+    wavelengthStart TEXT,
+    wavelengthStop TEXT,
+    sweepRate TEXT,
+    PRIMARY KEY (data_id),
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
+
+CREATE INDEX IF NOT EXISTS idx_optical_data ON OpticalInfo (data_id);
+
+-- =========================
+-- ElectricInfo
+-- =========================
+CREATE TABLE IF NOT EXISTS ElectricInfo (
+    data_id INTEGER NOT NULL,
+    element TEXT NOT NULL,  -- e.g. 'pn', 'heat'
+    channel TEXT NOT NULL,
+    set_mode TEXT NOT NULL,
+    set_value TEXT NOT NULL,
+    UNIQUE (data_id, channel),
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
+
+CREATE INDEX IF NOT EXISTS idx_electric_data ON ElectricInfo (data_id);
+
+-- =========================
+-- AnotherInfo
+-- =========================
+CREATE TABLE IF NOT EXISTS AnotherInfo (
     data_id INTEGER NOT NULL,
     info_key TEXT NOT NULL,
     info_value TEXT NOT NULL,
-    info_unit TEXT,
-    PRIMARY KEY (data_id, info_key, info_unit),
-    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
-
-CREATE INDEX IF NOT EXISTS idx_datainfo_data ON DataInfo (data_id);
-CREATE INDEX IF NOT EXISTS idx_datainfo_key ON DataInfo (info_key);
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE,
+    UNIQUE (data_id, info_key));
 
 -- =========================
 -- Analyses

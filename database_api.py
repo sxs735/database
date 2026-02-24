@@ -1,3 +1,4 @@
+#%%
 from concurrent.futures import ThreadPoolExecutor
 import re
 import shutil
@@ -19,7 +20,9 @@ class DatabaseAPI:
     TABLE_MEASURE_SESSIONS = "MeasureSession"
     TABLE_CONDITIONS = "Conditions"
     TABLE_DATA = "RawDataFiles"
-    TABLE_DATA_INFO = "DataInfo"
+    TABLE_OPTICAL_INFO = "OpticalInfo"
+    TABLE_ELECTRIC_INFO = "ElectricInfo"
+    TABLE_ANOTHER_INFO = "AnotherInfo"
     TABLE_ANALYSES = "Analyses"
     TABLE_ANALYSIS_SOURCES = "AnalysisSources"
     TABLE_FEATURES = "Features"
@@ -179,20 +182,20 @@ class DatabaseAPI:
                    wafer = excluded.wafer   -- no-op update
                    RETURNING DUT_id""",
                    (wafer, doe, die, cage, device))
-        row = cursor.fetchone()
+        DUT_id = cursor.fetchone()["DUT_id"]
         if commit:
             self.conn.commit()
-        return row["DUT_id"]
+        return DUT_id
   
     # Measurement 表
-    def insert_session(self, 
-                       dut_id: int,
-                       session_name: Optional[str] = None,
-                       operator: Optional[str] = None,
-                       system: Optional[str] = None,
-                       notes: Optional[str] = None,
-                       measured_at: Optional[Union[datetime, int, float]] = None,
-                       commit: bool = True) -> int:
+    def insert_measurement(self, 
+                           dut_id: int,
+                           session_name: Optional[str] = None,
+                           operator: Optional[str] = None,
+                           system: Optional[str] = None,
+                           notes: Optional[str] = None,
+                           measured_at: Optional[Union[datetime, int, float]] = None,
+                           commit: bool = True) -> int:
         """
         插入測量會話記錄
         
@@ -207,7 +210,7 @@ class DatabaseAPI:
         Returns:
             session_id
         """
-        timestamp = self._normalize_timestamp(measured_at)
+        timestamp = self._normalize_timestamp(measured_at).isoformat(sep=" ")
 
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_MEASUREMENTS} 
                                    (DUT_id, measure_name, measured_at, operator, system, notes)
@@ -219,16 +222,16 @@ class DatabaseAPI:
                                    notes = excluded.notes
                                    RETURNING measure_id""",
                                   (dut_id, session_name, timestamp, operator, system, notes))
-        row = cursor.fetchone()
+        measure_id = cursor.fetchone()["measure_id"]
         if commit:
             self.conn.commit()
-        return row["measure_id"]
+        return measure_id
 
     # MeasureSession 表
-    def insert_repeat(self,
-                      measure_id: int,
-                      session_idx: int,
-                      commit: bool = True) -> int:
+    def insert_session(self,
+                       measure_id: int,
+                       session_idx: int,
+                       commit: bool = True) -> int:
         """確保 Measurement 下的 session 記錄存在並回傳 MeasureSession.session_id"""
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_MEASURE_SESSIONS}
                                    (measure_id, session_idx)
@@ -237,10 +240,10 @@ class DatabaseAPI:
                                    session_idx = excluded.session_idx
                                    RETURNING session_id""",
                                    (measure_id, session_idx))
-        measure_session_id = cursor.fetchone()["session_id"]
+        session_id = cursor.fetchone()["session_id"]
         if commit:
             self.conn.commit()
-        return measure_session_id
+        return session_id
     
     # Conditions 表
     def insert_conditions(self, measure_id: int, conditions: Dict[str, Any], commit: bool = True):
@@ -270,8 +273,7 @@ class DatabaseAPI:
     
     # RawDataFiles 表
     def insert_rawdata_file(self,
-                            measure_id: int,
-                            session_idx: int,
+                            session_id: int,
                             data_type: str,
                             file_path: str,
                             file_name: Optional[str] = None,
@@ -281,8 +283,7 @@ class DatabaseAPI:
         插入測量數據記錄
         
         Args:
-            measure_id: Measurement ID
-            session_idx: MeasureSession 序號
+            session_id: MeasureSession ID
             data_type: 數據類型（如 'spectrum'）
             file_path: 文件路徑
             file_name: 檔名（預設取自 file_path）
@@ -291,10 +292,10 @@ class DatabaseAPI:
         Returns:
             data_id
         """
-        recorded_at = self._normalize_timestamp(recorded_at)
+        recorded_at = self._normalize_timestamp(recorded_at).isoformat(sep=" ")
         resolved_name = file_name or Path(file_path).name
 
-        measure_session_id = self.insert_repeat(measure_id, session_idx, commit=False)
+        #session_id = self.insert_session(measure_id, session_idx, commit=False)
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_DATA} 
                                    (session_id, data_type, file_name, file_path, recorded_at)
                                    VALUES (?, ?, ?, ?, ?)
@@ -303,35 +304,80 @@ class DatabaseAPI:
                                    file_name = excluded.file_name,
                                    recorded_at = excluded.recorded_at
                                    RETURNING data_id""",
-                                   (measure_session_id, data_type, resolved_name, file_path, recorded_at))
-        row = cursor.fetchone()
+                                   (session_id, data_type, resolved_name, file_path, recorded_at))
+        data_id = cursor.fetchone()["data_id"]
         if commit:
             self.conn.commit()
-        return row["data_id"]
+        return data_id
 
-    # DataInfo 表
-    def insert_data_info(self, data_id: int, info: Dict[str, Any], commit: bool = True):
-        """
-        批量插入測量數據資訊
-
-        Args:
-            data_id: 測量數據 ID
-            info: 資訊字典 {'exposure': 1.2, 'gain': 10.0, ...}
-                  或包含單位的字典 {'exposure': (1.2, 's'), 'gain': (10.0, 'dB'), ...}
-        """
-        for key, value_data in info.items():
-            if isinstance(value_data, (tuple, list)) and len(value_data) == 2:
-                value, unit = value_data
-            else:
-                value, unit = value_data, None
-            self.conn.execute(f"""INSERT INTO {self.TABLE_DATA_INFO} 
-                              (data_id, info_key, info_value, info_unit)
-                              VALUES (?, ?, ?, ?)
-                              ON CONFLICT (data_id, info_key, info_unit) DO UPDATE SET
-                              info_value = excluded.info_value""",
-                              (data_id, key, value, unit))
+    # OpticalInfo / ElectricInfo / AnotherInfo
+    def insert_optical_info(self,
+                            data_id: int,
+                            input_channel: str,
+                            output_channel: str,
+                            input_power: str,
+                            wavelength_start: str,
+                            wavelength_stop: str,
+                            sweep_rate: str,
+                            commit: bool = True) -> None:
+        """插入或更新 OpticalInfo（單筆資料對應一行）。"""
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_OPTICAL_INFO}
+                                   (data_id, input_channel, output_channel, input_power, wavelengthStart, wavelengthStop, sweepRate)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   ON CONFLICT(data_id) DO UPDATE SET
+                                   input_channel = excluded.input_channel,
+                                   output_channel = excluded.output_channel,
+                                   input_power = excluded.input_power,
+                                   wavelengthStart = excluded.wavelengthStart,
+                                   wavelengthStop = excluded.wavelengthStop,
+                                   sweepRate = excluded.sweepRate
+                                   RETURNING data_id""",
+                                   (data_id, input_channel, output_channel, input_power, wavelength_start, wavelength_stop, sweep_rate))
+        data_id = cursor.fetchone()["data_id"]
         if commit:
             self.conn.commit()
+        return data_id
+
+    def insert_electric_info(self,
+                             data_id: int,
+                             element: str,
+                             channel: str,
+                             set_mode: str,
+                             set_value: str,
+                             commit: bool = True) -> None:
+        """插入或更新 ElectricInfo（單筆資料對應一行）。"""
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_ELECTRIC_INFO}
+                                   (data_id, element, channel, set_mode, set_value)
+                                   VALUES (?, ?, ?, ?, ?)
+                                   ON CONFLICT (data_id, channel) DO UPDATE SET
+                                   element = excluded.element,
+                                   set_mode = excluded.set_mode,
+                                   set_value = excluded.set_value
+                                   RETURNING data_id""",
+                                   (data_id, element, channel, set_mode, set_value))
+        data_id = cursor.fetchone()["data_id"]
+        if commit:
+            self.conn.commit()
+        return data_id
+
+    def insert_another_info(self, 
+                            data_id: int, 
+                            info_key: str, 
+                            info_value: str, 
+                            commit: bool = True) -> None:
+        """插入其他自由格式資訊（key/value，可含單位）。"""
+
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_ANOTHER_INFO}
+                                   (data_id, info_key, info_value)
+                                   VALUES (?, ?, ?)
+                                   ON CONFLICT (data_id, info_key) DO UPDATE SET
+                                   info_value = excluded.info_value
+                                   RETURNING data_id""",
+                                   (data_id, info_key, info_value))
+        data_id = cursor.fetchone()["data_id"]
+        if commit:
+            self.conn.commit()
+        return data_id
     
     # Analyses 表
     def insert_analysis(self,
@@ -359,13 +405,13 @@ class DatabaseAPI:
             analysis_id
         """
         if created_time is None:
-            created_time = datetime.now().replace(microsecond=0)
+            created_time = datetime.now().replace(microsecond=0).isoformat(sep=" ")
         if algorithm is None:
             algorithm = "unspecified"
         if version is None:
             version = "1.0.0"
 
-        measure_session_id = self.insert_repeat(measure_id, session_idx, commit=False)
+        measure_session_id = self.insert_session(measure_id, session_idx, commit=False)
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_ANALYSES} 
                                    (session_id, analysis_type, instance_no, algorithm, version, created_time)
                                    VALUES (?, ?, ?, ?, ?, ?)
@@ -374,11 +420,11 @@ class DatabaseAPI:
                                    version = excluded.version,
                                    created_time = excluded.created_time
                                    RETURNING analysis_id""",
-                       (measure_session_id, analysis_type, instance_no, algorithm, version, created_time))
-        row = cursor.fetchone()
+                                   (measure_session_id, analysis_type, instance_no, algorithm, version, created_time))
+        analysis_id = cursor.fetchone()["analysis_id"]
         if commit:
             self.conn.commit()
-        return row["analysis_id"]
+        return analysis_id
 
     # AnalysisSources 表
     def insert_sources(self, analysis_id: int, data_id: int, commit: bool = True) -> None:
@@ -410,10 +456,10 @@ class DatabaseAPI:
                                    feature_idx = excluded.feature_idx
                                    RETURNING feature_id""",
                                    (analysis_id, feature_type, feature_idx))
-        row = cursor.fetchone()
+        feature_id = cursor.fetchone()["feature_id"]
         if commit:
             self.conn.commit()
-        return row["feature_id"]
+        return feature_id
     
     # FeatureMetrics 表
     def insert_metrics(self, feature_id: int, values: Dict[str, Any], commit: bool = True):
@@ -543,14 +589,28 @@ class DatabaseAPI:
         results = self.query(sql, (data_id,))
         return results[0] if results else None
 
-    # DataInfo 查詢
-    def select_datainfo_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
-        """查詢特定測量數據的所有資訊"""
-        return self.query(f"SELECT * FROM {self.TABLE_DATA_INFO} WHERE data_id = ?", (data_id,))
+    # OpticalInfo / ElectricInfo 查詢
+    def select_optical_info_by_data_id(self, data_id: int) -> Optional[Dict[str, Any]]:
+        """取得單筆數據的光學設定。"""
+        rows = self.query(f"SELECT * FROM {self.TABLE_OPTICAL_INFO} WHERE data_id = ?", (data_id,))
+        return rows[0] if rows else None
 
-    def select_datainfo_dict_by_data_id(self, data_id: int) -> Dict[str, Tuple[Any, Optional[str]]]:
-        """以字典形式返回測量數據資訊（包含單位）"""
-        info = self.select_datainfo_by_data_id(data_id)
+    def select_electric_info_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
+        """取得單筆數據的電性設定（每個 channel 一行）。"""
+        return self.query(f"SELECT * FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ? ORDER BY channel", (data_id,))
+
+    def select_electric_info_dict_by_data_id(self, data_id: int) -> Dict[str, Dict[str, Any]]:
+        """以字典形式返回電性設定，鍵為 channel。"""
+        rows = self.select_electric_info_by_data_id(data_id)
+        return {row['channel']: {'element': row['element'], 'set_mode': row['set_mode'], 'set_value': row['set_value']} for row in rows}
+
+    def select_another_info_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
+        """查詢自由格式的其它資訊。"""
+        return self.query(f"SELECT * FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?", (data_id,))
+
+    def select_another_info_dict_by_data_id(self, data_id: int) -> Dict[str, Tuple[Any, Optional[str]]]:
+        """以字典形式返回其它資訊（包含單位）。"""
+        info = self.select_another_info_by_data_id(data_id)
         return {item['info_key']: (self._coerce_db_value(item['info_value']), item['info_unit']) for item in info}
     
     # Analyses 查詢
@@ -679,6 +739,10 @@ class DatabaseAPI:
         
         # 測量數據
         session['measurement_data'] = self.select_rawdata_by_session_id(measure_id)
+        for data in session['measurement_data']:
+            data['optical_info'] = self.select_optical_info_by_data_id(data['data_id'])
+            data['electric_info'] = self.select_electric_info_by_data_id(data['data_id'])
+            data['another_info'] = self.select_another_info_dict_by_data_id(data['data_id'])
         
         # 分析執行
         analysis_runs = self.select_analyses_by_session_id(measure_id)
@@ -738,9 +802,33 @@ class DatabaseAPI:
         self.conn.commit()
         return cursor.rowcount
 
-    def delete_data_info(self, info_id: int) -> int:
-        """刪除測量數據資訊"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_DATA_INFO} WHERE info_id = ?", (info_id,))
+    def delete_optical_info(self, data_id: int) -> int:
+        """刪除光學設定"""
+        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_OPTICAL_INFO} WHERE data_id = ?", (data_id,))
+        self.conn.commit()
+        return cursor.rowcount
+
+    def delete_electric_info(self, data_id: int, channel: Optional[str] = None) -> int:
+        """刪除電性設定（可選擇性僅刪除某 channel）。"""
+        if channel is None:
+            cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ?", (data_id,))
+        else:
+            cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ? AND channel = ?",
+                                       (data_id, channel))
+        self.conn.commit()
+        return cursor.rowcount
+
+    def delete_another_info(self, data_id: int, info_key: Optional[str] = None, info_unit: Optional[str] = None) -> int:
+        """刪除其他資訊，可依 key/unit 篩選。"""
+        sql = f"DELETE FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?"
+        params: List[Any] = [data_id]
+        if info_key is not None:
+            sql += " AND info_key = ?"
+            params.append(info_key)
+        if info_unit is not None:
+            sql += " AND info_unit = ?"
+            params.append(info_unit)
+        cursor = self.conn.execute(sql, tuple(params))
         self.conn.commit()
         return cursor.rowcount
     
@@ -799,7 +887,9 @@ class DatabaseAPI:
                   self.TABLE_MEASURE_SESSIONS, 
                   self.TABLE_CONDITIONS, 
                   self.TABLE_DATA, 
-                  self.TABLE_DATA_INFO, 
+                  self.TABLE_OPTICAL_INFO,
+                  self.TABLE_ELECTRIC_INFO,
+                  self.TABLE_ANOTHER_INFO,
                   self.TABLE_ANALYSES, 
                   self.TABLE_ANALYSIS_SOURCES, 
                   self.TABLE_FEATURES, 
@@ -886,30 +976,30 @@ class DatabaseAPI:
             token = tokens[i]
             if token == "SMU":
                 match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 3])
-                result["SMU"].append({f"ec{tokens[i + 2]} type": tokens[i + 1],
-                                      f"ec{tokens[i + 2]} channel": tokens[i + 2],
-                                      f"ec{tokens[i + 2]} value": (float(match[1]), match[2])})
+                result["SMU"].append({"element": tokens[i + 1],
+                                      "channel": tokens[i + 2],
+                                      "set_mode": 'VOLT' if match[2] in ['V', 'mV'] else 'CURR',
+                                      "set_value": tokens[i + 3]})
                 i += 4
                 ec_i += 1
                 continue
             if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
                 match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 2])
-                result["SMU"].append({f"ec{tokens[i + 1]} type": tokens[i],
-                                      f"ec{tokens[i + 1]} channel": tokens[i + 1],
-                                      f"ec{tokens[i + 1]} value": (float(match[1]), match[2])})
+                result["SMU"].append({"element": tokens[i],
+                                      "channel": tokens[i + 1],
+                                      "set_mode": 'VOLT' if match[2] in ['V', 'mV'] else 'CURR',
+                                      "set_value": tokens[i + 2]})
                 i += 3
                 ec_i += 1
                 continue
             if token == "arg":
-                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 1])
-                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
+                result["arguments"].append({f"arg": tokens[i + 1]})
                 arg_i += 1
                 i += 2
                 pass_SMU = True
                 continue
             if token:
-                match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", token)
-                result["arguments"].append({f"arg{arg_i}": (float(match[1]), match[2])})
+                result["arguments"].append({"arg": token})
                 arg_i += 1
             i += 1
 
@@ -951,32 +1041,17 @@ class DatabaseAPI:
         except OSError:
             shutil.move(str(src), str(dst))  # 跨磁碟機降級
 
-    def import_session_folder(self,
-                              folder_path: str,
-                              target_root: Optional[str] = None,
-                              schema_file: str = "schema.sql",
-                              operator: str = "T&P",
-                              system: str = "CM300v1.0",
-                              notes: str = "") -> Tuple[Dict[Path, Dict[str, Any]], List[str]]:
-        """
-        解析資料夾內檔案並寫入資料庫，完成後移動檔案到目標資料夾。
+    def import_from_measurement_folder(self, folder_path, schema_file="schema.sql"):
 
-        Returns:
-        - (valid_files, invalid_files)
-        """
         folder = Path(folder_path)
         valid_files, invalid_files = self.parse_folder(folder)
-
-        if target_root is None:
-            target_root_path = Path(self.db_path).parent / "RawDataFiles"
-        else:
-            target_root_path = Path(target_root)
+        target_root_path = Path(self.db_path).parent / "RawDataFiles"
 
         try:
             self.create_db(schema_file)
         except Exception:
             pass
-        
+
         tested_timestamp = folder.stat().st_mtime
         move_path = []
         try:
@@ -987,63 +1062,74 @@ class DatabaseAPI:
                 repeat_folder = r"#" + file_info["repeat"]
                 session_idx = int(file_info["repeat"])
                 target_dir = (target_root_path/ 
-                              file_info["wafer"]/ 
-                              file_info["doe"]/ 
-                              file_info["cage"]/
-                              file_info["device"]/
-                              f"die{file_info['die']}"/ session_name/ repeat_folder)
+                            file_info["wafer"]/ 
+                            file_info["doe"]/ 
+                            file_info["cage"]/
+                            file_info["device"]/
+                            f"die{file_info['die']}"/ session_name/ repeat_folder)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
 
                 dut_id = self.insert_dut(wafer=file_info["wafer"],
-                                         doe=file_info["doe"],
-                                         die=file_info["die"],
-                                         cage=file_info["cage"],
-                                         device=file_info["device"],
-                                         commit=False)
+                                    doe=file_info["doe"],
+                                    die=file_info["die"],
+                                    cage=file_info["cage"],
+                                    device=file_info["device"],
+                                    commit=False)
 
-                measure_id = self.insert_session(dut_id=dut_id,
-                                                 session_name=session_name,
-                                                 operator=operator,
-                                                 system=system,
-                                                 measured_at=tested_timestamp,
-                                                 notes=notes,
-                                                 commit=False)
+                measure_id = self.insert_measurement(dut_id=dut_id,
+                                                session_name=session_name,
+                                                operator="T&P",
+                                                system="CM300v1.0",
+                                                measured_at=tested_timestamp,
+                                                notes="",
+                                                commit=False)
+                
                 self.insert_conditions(measure_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
 
-                data_id = self.insert_rawdata_file(measure_id=measure_id,
-                                                   session_idx=session_idx,
-                                                   data_type=file_info["datatype"],
-                                                   recorded_at=filepath.stat().st_mtime,
-                                                   file_path=str(dst),
-                                                   file_name=filepath.name,
-                                                   commit=False)
-                opt = {"channel_in": file_info["ch_in"],
-                       "channel_out": file_info["ch_out"],
-                       "power": (file_info["power"], "dBm")}
-                smu = file_info.pop("SMU")
-                smu = {k: v for d in smu for k, v in d.items()}
-                ec_types = [smu[key] for key in smu if all(x in key for x in ('ec','type'))]
-                isheat = 'heat' in ec_types and len(ec_types) == 1
+                session_id = self.insert_session(measure_id, session_idx, commit=False)
+
+                data_id = self.insert_rawdata_file(session_id=session_id,
+                                                data_type=file_info["datatype"],
+                                                recorded_at=filepath.stat().st_mtime,
+                                                file_path=str(dst),
+                                                file_name=filepath.name,
+                                                commit=False)
+                smu_entries = file_info.pop("SMU")
                 arguments = file_info.pop("arguments")
-                arguments = {k: v for d in arguments for k, v in d.items()}
+
+                wavelength_start=None
+                wavelength_stop=None
+                sweep_rate=None
+
                 if file_info["datatype"] in ["SPCM"]:
-                    other, _ = read_spectrum(filepath)
-                    info_dict = {**opt, **smu, **arguments, **other}   
-                elif file_info["datatype"] in ["DCIV"] and isheat:
-                    other = read_dcvi(filepath)
-                    resistance = (round(other["measured voltage"][0] / other["measured current"][0], 2) 
-                                  if other["measured current"][0] != 0 else 'DIV/0')
-                    other[f'ec{other["channel"]} resistance'] = (resistance, "Ohm")
-                    other.pop("measured voltage", 0)
-                    other.pop("measured current", 0)
+                    head, _ = read_spectrum(filepath)
+                    wavelength_start=head["WavelengthStart"]
+                    wavelength_stop=head["WavelengthStop"]
+                    sweep_rate=head["SweepRate"]
 
-                    info_dict = {**opt,**smu, **arguments, **other}
-                else:
-                    info_dict = {**opt, **smu, **arguments}
-                self.insert_data_info(data_id,info_dict,commit=False)
+                self.insert_optical_info(data_id=data_id,
+                                    input_channel=file_info["ch_in"],
+                                    output_channel=file_info["ch_out"],
+                                    input_power=f"{file_info['power']} dBm",
+                                    wavelength_start=wavelength_start,
+                                    wavelength_stop=wavelength_stop,
+                                    sweep_rate=sweep_rate,
+                                    commit=False)
+                for row in smu_entries:
+                    self.insert_electric_info(data_id=data_id,
+                                            element=row["element"],
+                                            channel=row["channel"],
+                                            set_mode=row["set_mode"],
+                                            set_value=row["set_value"],
+                                            commit=False)
+                    
+                for idx, row in enumerate(arguments):
+                    self.insert_another_info(data_id=data_id,
+                                        info_key=f'arg_{idx}',
+                                        info_value=row["arg"],
+                                        commit=False)
 
-                
                 move_path.append((filepath, dst))
             self.conn.commit()
             # for src, dst in tqdm(move_path, desc="Moving", unit="file"):
@@ -1058,5 +1144,5 @@ class DatabaseAPI:
                 self.conn.rollback()
             raise
         print(f"匯入資料庫完成")
-        return valid_files, invalid_files
  
+# %%

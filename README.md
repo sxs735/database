@@ -51,6 +51,7 @@ pip install -r requirements.txt  # or install the packages listed above
 ## Key Database Concepts
 
 - **Measurement vs. MeasureSession**: `Measurement` captures DUT-level metadata, while `MeasureSession` indexes each repeat (`session_idx`) under a measurement and is referenced by data files and analyses.
+- **OpticalInfo / ElectricInfo / AnotherInfo**: per-data rows storing channel mapping, launch power, sweep range, SMU/argument setpoints, and additional free-form key/value metadata linked by `data_id`.
 - **Analyses**: each run is scoped by `(session_id, analysis_type, instance_no)` where `session_id` points to a `MeasureSession` row.
 - **AnalysisSources**: many-to-many bridge recording which `RawDataFiles` entries fed a given analysis run.
 - **Features / FeatureMetrics**: hierarchical storage for peaks, valleys, or other observables with arbitrary key/value units.
@@ -66,6 +67,9 @@ with DatabaseAPI("Measurement.db") as db:
    dut_id = db.insert_dut(wafer="W001", doe="DOE_A", die=5, cage="C1", device="DEV01")
    measure_id = db.insert_session(dut_id, session_name="SPCM_20260205")
    data_id = db.insert_rawdata_file(measure_id, session_idx=0, data_type="SPCM", file_path=".../file.csv")
+   db.insert_optical_info(data_id, input_channel="1", output_channel="2", input_power="0 dBm", wavelength_start=1525, wavelength_stop=1575, sweep_rate=100)
+   db.insert_electric_info(data_id, [{"element": "SMU", "channel": "1", "set_mode": "VOLT", "set_value": 3.3}])
+   db.insert_another_info(data_id, {"note": "baseline", "wavelength_step": (0.01, "nm")})
    db.insert_conditions(measure_id, {"temperature": (25, "°C")})
    db.insert_analysis(measure_id,
                       session_idx=0,

@@ -26,7 +26,7 @@ def read_spectrum(path,start_idx=None,end_idx=None):
                   or 'WavelengthStop' in row 
                   or 'WavelengthStep' in row 
                   or 'SweepRate' in row):
-                head[row[0]] = (row[1], row[2])
+                head[row[0]] = row[1]+row[2]
 
         if start_idx is not None:
             data = np.array(data, dtype=float)
