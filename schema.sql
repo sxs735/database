@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS Measurement (
     measure_id INTEGER PRIMARY KEY,
     DUT_id INTEGER NOT NULL,
     measure_name TEXT,
-    measured_at DATETIME,
+    measured_at TEXT,
     operator TEXT,
     system TEXT,
     notes TEXT,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS Conditions (
     condition_id INTEGER PRIMARY KEY,
     measure_id INTEGER NOT NULL,
     setting_parameters TEXT NOT NULL,
-    setting_value REAL NOT NULL,
+    setting_value TEXT NOT NULL,
     parameters_unit TEXT,
     FOREIGN KEY (measure_id) REFERENCES Measurement(measure_id) ON DELETE CASCADE,
     UNIQUE (measure_id, setting_parameters, parameters_unit));
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS RawDataFiles (
     data_type TEXT NOT NULL,     -- e.g. 'spectrum'
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
-    recorded_at DATETIME,
+    recorded_at TEXT,
     FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
     UNIQUE (session_id, file_name));
 
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS Analyses (
     instance_no INTEGER NOT NULL,
     algorithm TEXT NOT NULL,
     version TEXT NOT NULL,
-    created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_time TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
     UNIQUE (session_id, analysis_type, instance_no));
 
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS FeatureMetrics (
     metric_unit TEXT,
 
     FOREIGN KEY (feature_id) REFERENCES Features(feature_id) ON DELETE CASCADE,
-    UNIQUE (feature_id, metric_key, metric_unit));
+    UNIQUE (feature_id, metric_key));
 
 CREATE INDEX IF NOT EXISTS idx_value_feature ON FeatureMetrics (feature_id);
 CREATE INDEX IF NOT EXISTS idx_value_feature_key ON FeatureMetrics (feature_id, metric_key);

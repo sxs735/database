@@ -187,14 +187,14 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     FWHMGHz = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * frequency_spacing
     Q = wavelength_x / FWHMnm
     
-    return ({'Extinction Ratio': (ER, 'dB'),
-            'FSRnm': (np.round(FSRnm, 3).tolist(), 'nm'),
-            'FSRGHz': (np.round(FSRGHz, 3).tolist(), 'GHz'),
-            'FWHMnm': (np.round(FWHMnm, 3).tolist(), 'nm'),
-            'FWHMGHz': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
+    return ({'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
+            'FSR(nm)': (np.round(FSRnm, 3).tolist(), 'nm'),
+            'FSR(GHz)': (np.round(FSRGHz, 3).tolist(), 'GHz'),
+            'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
+            'FWHM(GHz)': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
             'Q factor': (np.round(Q, 0).tolist(), ''),
-            'valley_wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
-            'valley_frequency': (np.round(frequency_x, 3).tolist(), 'THz')},
+            'Valley_Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
+            'Valley_Frequency': (np.round(frequency_x, 3).tolist(), 'THz')},
             inspect.currentframe().f_code.co_name, 
             version)
 

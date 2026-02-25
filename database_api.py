@@ -380,8 +380,7 @@ class DatabaseAPI:
     
     # Analyses 表
     def insert_analysis(self,
-                        measure_id: int,
-                        session_idx: int,
+                        session_id: int,
                         analysis_type: str,
                         instance_no: int,
                         algorithm: Optional[str] = None,
@@ -392,8 +391,7 @@ class DatabaseAPI:
         插入分析執行記錄
         
         Args:
-            measure_id: Measurement ID
-            session_idx: MeasureSession 序號
+            session_id: MeasureSession ID
             analysis_type: 分析類型（如 'peak_detection'）
             instance_no: 分析實例編號
             algorithm: 具體演算法名稱
@@ -410,7 +408,6 @@ class DatabaseAPI:
         if version is None:
             version = "1.0.0"
 
-        measure_session_id = self.insert_session(measure_id, session_idx, commit=False)
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_ANALYSES} 
                                    (session_id, analysis_type, instance_no, algorithm, version, created_time)
                                    VALUES (?, ?, ?, ?, ?, ?)
@@ -419,7 +416,7 @@ class DatabaseAPI:
                                    version = excluded.version,
                                    created_time = excluded.created_time
                                    RETURNING analysis_id""",
-                                   (measure_session_id, analysis_type, instance_no, algorithm, version, created_time))
+                                   (session_id, analysis_type, instance_no, algorithm, version, created_time))
         analysis_id = cursor.fetchone()["analysis_id"]
         if commit:
             self.conn.commit()
@@ -480,7 +477,7 @@ class DatabaseAPI:
             self.conn.execute(f"""INSERT INTO {self.TABLE_METRICS} 
                               (feature_id, metric_key, metric_value, metric_unit)
                               VALUES (?, ?, ?, ?)
-                              ON CONFLICT (feature_id, metric_key, metric_unit) DO UPDATE SET
+                              ON CONFLICT (feature_id, metric_key) DO UPDATE SET
                               metric_value = excluded.metric_value""",
                               (feature_id, key, value, unit))
         if commit:
@@ -537,6 +534,28 @@ class DatabaseAPI:
         results = self.query(f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE measure_id = ?", (measure_id,))
         return results[0] if results else None
     
+    def select_session_ids_by_measure_name(self, measure_name: str) -> List[int]:
+        """根據 measure_name 取得所有 session_id（依 session_idx 排序）。"""
+        sql = f"""SELECT ms.session_id
+                  FROM {self.TABLE_MEASURE_SESSIONS} ms
+                  JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
+                  WHERE m.measure_name = ?
+                  ORDER BY ms.session_idx"""
+        rows = self.query(sql, (measure_name,))
+        return [row["session_id"] for row in rows]
+    
+    def select_session_ids_by_measure_name_and_cage(self, measure_name: str, cage: str) -> List[int]:
+        sql = f"""SELECT ms.session_id
+                  FROM {self.TABLE_MEASURE_SESSIONS} ms
+                  JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
+                  JOIN {self.TABLE_DUT} d ON m.DUT_id = d.DUT_id
+                  WHERE m.measure_name = ?
+                  AND d.cage = ?
+                  ORDER BY ms.session_idx"""
+        
+        rows = self.query(sql, (measure_name, cage))
+        return [row["session_id"] for row in rows]
+
     def select_sessions_by_dut_id(self, dut_id: int) -> List[Dict[str, Any]]:
         """查詢特定 DUT 的所有測量會話"""
         return self.query(f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE DUT_id = ? ORDER BY measured_at DESC",(dut_id,))
@@ -578,6 +597,21 @@ class DatabaseAPI:
 
         sql += " ORDER BY ms.session_idx, md.data_id"
         return self.query(sql, tuple(params))
+
+    def select_data_ids_paths_by_session(self, session_id: int, data_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """查詢指定 session_id (可選 data_type) 的 data_id 與 file_path。"""
+        sql = f"""SELECT data_id, file_path
+                  FROM {self.TABLE_DATA}
+                  WHERE session_id = ?"""
+        params: List[Any] = [session_id]
+
+        if data_type:
+            sql += " AND data_type = ?"
+            params.append(data_type)
+
+        sql += " ORDER BY data_id"
+        rows = self.query(sql, tuple(params))
+        return rows
 
     def select_rawdata_by_data_id(self, data_id: int) -> Optional[Dict[str, Any]]:
         """根據 data_id 查詢單筆測量數據"""
@@ -1047,12 +1081,23 @@ class DatabaseAPI:
         shutil.copy2(src, dst)
 
     def import_from_measurement_folder(self, folder_path, schema_file="schema.sql"):
+        """批次匯入資料夾中的測量檔案並寫入資料庫與 RawDataFiles 目錄。
+
+        Args:
+            folder_path: 含有測量檔案的資料夾路徑。
+            schema_file: 在需要時用來初始化資料庫的 schema 檔案。
+
+        Returns:
+            None
+        """
 
         folder = Path(folder_path)
+        # 先解析資料夾，拆出合規檔案與命名失敗清單
         valid_files, invalid_files = self.parse_folder(folder)
         target_root_path = Path(self.db_path).parent / "RawDataFiles"
 
         try:
+            # 若資料庫尚未建立則依 schema 初始化
             self.create_db(schema_file)
         except Exception:
             pass
@@ -1060,46 +1105,49 @@ class DatabaseAPI:
         tested_timestamp = folder.stat().st_mtime
         move_path = []
         try:
+            # 使用交易確保整批匯入原子性
             self.conn.execute("BEGIN")
             for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
                 file_info = dict(file_info_raw)
                 session_name = folder.name
                 repeat_folder = r"#" + file_info["repeat"]
                 session_idx = int(file_info["repeat"])
+                # 依檔名資訊建立資料儲存層級
                 target_dir = (target_root_path/ 
-                            file_info["wafer"]/ 
-                            file_info["doe"]/ 
-                            file_info["cage"]/
-                            file_info["device"]/
-                            f"die{file_info['die']}"/ session_name/ repeat_folder)
+                              file_info["wafer"]/ 
+                              file_info["doe"]/ 
+                              file_info["cage"]/
+                              file_info["device"]/
+                              f"die{file_info['die']}"/ session_name/ repeat_folder)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
 
+                # 寫入 DUT 與量測會話基礎資料
                 dut_id = self.insert_dut(wafer=file_info["wafer"],
-                                    doe=file_info["doe"],
-                                    die=file_info["die"],
-                                    cage=file_info["cage"],
-                                    device=file_info["device"],
-                                    commit=False)
+                                         doe=file_info["doe"],
+                                         die=file_info["die"],
+                                         cage=file_info["cage"],
+                                         device=file_info["device"],
+                                         commit=False)
 
                 measure_id = self.insert_measurement(dut_id=dut_id,
-                                                session_name=session_name,
-                                                operator="T&P",
-                                                system="CM300v1.0",
-                                                measured_at=tested_timestamp,
-                                                notes="",
-                                                commit=False)
+                                                     session_name=session_name,
+                                                     operator="T&P",
+                                                     system="CM300v1.0",
+                                                     measured_at=tested_timestamp,
+                                                     notes="",
+                                                     commit=False)
                 
                 self.insert_conditions(measure_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
 
                 session_id = self.insert_session(measure_id, session_idx, commit=False)
 
                 data_id = self.insert_rawdata_file(session_id=session_id,
-                                                data_type=file_info["datatype"],
-                                                recorded_at=filepath.stat().st_mtime,
-                                                file_path=str(dst),
-                                                file_name=filepath.name,
-                                                commit=False)
+                                                   data_type=file_info["datatype"],
+                                                   recorded_at=filepath.stat().st_mtime,
+                                                   file_path=str(dst),
+                                                   file_name=filepath.name,
+                                                   commit=False)
                 smu_entries = file_info.pop("SMU")
                 arguments = file_info.pop("arguments")
 
@@ -1113,33 +1161,36 @@ class DatabaseAPI:
                     wavelength_stop=head["WavelengthStop"]
                     sweep_rate=head["SweepRate"]
 
+                # 儲存光學/電性設定與其它參數
                 self.insert_optical_info(data_id=data_id,
-                                    input_channel=file_info["ch_in"],
-                                    output_channel=file_info["ch_out"],
-                                    input_power=f"{file_info['power']} dBm",
-                                    wavelength_start=wavelength_start,
-                                    wavelength_stop=wavelength_stop,
-                                    sweep_rate=sweep_rate,
-                                    commit=False)
+                                         input_channel=file_info["ch_in"],
+                                         output_channel=file_info["ch_out"],
+                                         input_power=f"{file_info['power']} dBm",
+                                         wavelength_start=wavelength_start,
+                                         wavelength_stop=wavelength_stop,
+                                         sweep_rate=sweep_rate,
+                                         commit=False)
                 for row in smu_entries:
                     self.insert_electric_info(data_id=data_id,
-                                            element=row["element"],
-                                            channel=row["channel"],
-                                            set_mode=row["set_mode"],
-                                            set_value=row["set_value"],
-                                            commit=False)
+                                              element=row["element"],
+                                              channel=row["channel"],
+                                              set_mode=row["set_mode"],
+                                              set_value=row["set_value"],
+                                              commit=False)
                     
                 for idx, row in enumerate(arguments):
                     self.insert_another_info(data_id=data_id,
-                                        info_key=f'arg_{idx}',
-                                        info_value=row["arg"],
-                                        commit=False)
+                                             info_key=f'arg_{idx}',
+                                             info_value=row["arg"],
+                                             commit=False)
 
                 move_path.append((filepath, dst))
             self.conn.commit()
+            # 移動或複製檔案至目標資料夾
             #for src, dst in tqdm(move_path, desc="Moving", unit="file"):
                 #shutil.move(str(src), str(dst))
                 #shutil.copy2(str(src), str(dst))
+            #多線程-移動或複製檔案至目標資料夾
             with ThreadPoolExecutor() as executor:
                 # list(tqdm(executor.map(self.move_file, move_path), 
                 #         total=len(move_path), 
