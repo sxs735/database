@@ -4,11 +4,13 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-folder_path = Path(r"C:\Users\mg942\Desktop\元澄\PIC9-FPN3_DOE1_MRM033_DC&RF_3dB\20260202")
-db_path = Path(r"C:\Users\mg942\Desktop\元澄\Data") / "DataBase.db"
+folder_path = Path(r"D:\processing\資料庫整理\260122_4")
+db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
 #%%
 with DatabaseAPI(db_path) as db:
     db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
+    #a,b = db.parse_folder(folder_path)
+    #c = db.parse_filename(b[0])
 #%%
 with DatabaseAPI(db_path) as db:
     output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")
@@ -83,4 +85,12 @@ with DatabaseAPI(db_path) as db:
         print(info)
 
     
+# %%
+with DatabaseAPI(db_path) as db:
+    db.conn.rollback()
+# %%
+import sqlite3
+
+conn = sqlite3.connect(db_path)
+print(conn.execute("PRAGMA integrity_check;").fetchone())
 # %%

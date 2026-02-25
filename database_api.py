@@ -1,4 +1,3 @@
-#%%
 from concurrent.futures import ThreadPoolExecutor
 import re
 import shutil
@@ -299,9 +298,9 @@ class DatabaseAPI:
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_DATA} 
                                    (session_id, data_type, file_name, file_path, recorded_at)
                                    VALUES (?, ?, ?, ?, ?)
-                                   ON CONFLICT (session_id, file_path) DO UPDATE SET
+                                   ON CONFLICT (session_id, file_name) DO UPDATE SET
                                    data_type = excluded.data_type,
-                                   file_name = excluded.file_name,
+                                   file_path = excluded.file_path,
                                    recorded_at = excluded.recorded_at
                                    RETURNING data_id""",
                                    (session_id, data_type, resolved_name, file_path, recorded_at))
@@ -1041,6 +1040,12 @@ class DatabaseAPI:
         except OSError:
             shutil.move(str(src), str(dst))  # 跨磁碟機降級
 
+    @classmethod
+    def copy_file(cls, src_dst):
+        """Copy a file to destination; uses copy2 to preserve metadata."""
+        src, dst = src_dst
+        shutil.copy2(src, dst)
+
     def import_from_measurement_folder(self, folder_path, schema_file="schema.sql"):
 
         folder = Path(folder_path)
@@ -1132,10 +1137,15 @@ class DatabaseAPI:
 
                 move_path.append((filepath, dst))
             self.conn.commit()
-            # for src, dst in tqdm(move_path, desc="Moving", unit="file"):
-            #     shutil.move(str(src), str(dst))
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                list(tqdm(executor.map(self.move_file, move_path), 
+            #for src, dst in tqdm(move_path, desc="Moving", unit="file"):
+                #shutil.move(str(src), str(dst))
+                #shutil.copy2(str(src), str(dst))
+            with ThreadPoolExecutor() as executor:
+                # list(tqdm(executor.map(self.move_file, move_path), 
+                #         total=len(move_path), 
+                #         desc="Moving", 
+                #         unit="file"))
+                list(tqdm(executor.map(self.copy_file, move_path), 
                         total=len(move_path), 
                         desc="Moving", 
                         unit="file"))
@@ -1145,4 +1155,3 @@ class DatabaseAPI:
             raise
         print(f"匯入資料庫完成")
  
-# %%

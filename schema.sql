@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS RawDataFiles (
     file_path TEXT NOT NULL,
     recorded_at DATETIME,
     FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
-    UNIQUE (session_id, file_path));
+    UNIQUE (session_id, file_name));
 
 CREATE INDEX IF NOT EXISTS idx_raw_session_type ON RawDataFiles (session_id, data_type);
 
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS ElectricInfo (
     channel TEXT NOT NULL,
     set_mode TEXT NOT NULL,
     set_value TEXT NOT NULL,
-    UNIQUE (data_id, channel),
+    PRIMARY KEY (data_id, channel),
     FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
 
 CREATE INDEX IF NOT EXISTS idx_electric_data ON ElectricInfo (data_id);
