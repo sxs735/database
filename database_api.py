@@ -1068,17 +1068,24 @@ class DatabaseAPI:
 
     @classmethod
     def move_file(cls, src_dst):
+        """Move a file unless the destination already exists."""
         src, dst = src_dst
+        if dst.exists():
+            return False
         try:
             src.rename(dst)  # 同磁碟機非常快
         except OSError:
             shutil.move(str(src), str(dst))  # 跨磁碟機降級
+        return True
 
     @classmethod
     def copy_file(cls, src_dst):
         """Copy a file to destination; uses copy2 to preserve metadata."""
         src, dst = src_dst
+        if dst.exists():
+            return False
         shutil.copy2(src, dst)
+        return True
 
     def import_from_measurement_folder(self, folder_path, schema_file="schema.sql"):
         """批次匯入資料夾中的測量檔案並寫入資料庫與 RawDataFiles 目錄。
@@ -1102,7 +1109,7 @@ class DatabaseAPI:
         except Exception:
             pass
 
-        tested_timestamp = folder.stat().st_mtime
+        tested_timestamp = folder.stat().st_birthtime
         move_path = []
         try:
             # 使用交易確保整批匯入原子性

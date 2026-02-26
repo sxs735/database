@@ -145,24 +145,34 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     
     # 尋找谷值
     valley_idx, _ = find_peaks(-loss_level, prominence=prominence, distance=distance)
-    
-    # 檢查是否找到足夠的谷值
-    if len(valley_idx) < 2:
-        return ({'Extinction Ratio': ([], 'dB'),
-                'FSRnm': ([], 'nm'),
-                'FSRGHz': ([], 'GHz'),
-                'FWHMnm': ([], 'nm'),
-                'FWHMGHz': ([], 'GHz'),
-                'Q factor': ([], ''),
-                'valley_wavelength': ([], 'nm'),
-                'valley_frequency': ([], 'THz'),
-                'valley_loss': ([], 'dB')},
-                inspect.currentframe().f_code.co_name, 
-                version)
-    
+
     wavelength_x = wavelength[valley_idx]
     frequency_x = frequency[valley_idx]
     valley_loss = loss_level[valley_idx]
+
+    # 計算消光比 (Extinction Ratio)
+    ER = peak_prominences(-loss_level, valley_idx)[0]
+    
+    # 計算 FWHM 和 Q factor
+    Ty = 10 ** (loss_level / 10)
+    wavelength_spacing = np.median(np.diff(wavelength))
+    frequency_spacing = -np.median(np.diff(frequency))
+    FWHMnm = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * wavelength_spacing
+    FWHMGHz = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * frequency_spacing
+    Q = wavelength_x / FWHMnm
+
+    results = {'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
+               'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
+               'FWHM(GHz)': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
+               'Q factor': (np.round(Q, 0).tolist(), ''),
+               'Valley_Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
+               'Valley_Frequency': (np.round(frequency_x, 3).tolist(), 'THz')}
+
+    # 檢查是否找到足夠的谷值
+    if len(valley_idx) < 2 and len(valley_idx) > 0:
+        return (results,
+                inspect.currentframe().f_code.co_name, 
+                version)
     
     # 計算 FSR (nm)
     FSRnm = wavelength_x[1:] - wavelength_x[:-1]
@@ -175,26 +185,10 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     FSRGHz = np.vstack((np.r_[FSRGHz, np.nan], np.r_[np.nan, FSRGHz]))
     FSRGHz = FSRGHz[FSRidx, range(len(FSRidx))]
     
-    # 計算消光比 (Extinction Ratio)
-    ER = -peak_prominences(-loss_level, valley_idx)[0]
+    results.update({'FSR(nm)': (np.round(FSRnm, 3).tolist(), 'nm'),
+                    'FSR(GHz)': (np.round(FSRGHz, 3).tolist(), 'GHz')})
     
-    # 計算 FWHM 和 Q factor
-    Ty = 10 ** (loss_level / 10)
-    wavelength_spacing = np.median(np.diff(wavelength))
-    frequency_spacing = -np.median(np.diff(frequency))
-    
-    FWHMnm = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * wavelength_spacing
-    FWHMGHz = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * frequency_spacing
-    Q = wavelength_x / FWHMnm
-    
-    return ({'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
-            'FSR(nm)': (np.round(FSRnm, 3).tolist(), 'nm'),
-            'FSR(GHz)': (np.round(FSRGHz, 3).tolist(), 'GHz'),
-            'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
-            'FWHM(GHz)': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
-            'Q factor': (np.round(Q, 0).tolist(), ''),
-            'Valley_Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
-            'Valley_Frequency': (np.round(frequency_x, 3).tolist(), 'THz')},
+    return (results,
             inspect.currentframe().f_code.co_name, 
             version)
 
