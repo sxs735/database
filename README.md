@@ -66,32 +66,32 @@ The API wraps common insert/query/delete patterns.
 with DatabaseAPI("Measurement.db") as db:
    dut_id = db.insert_dut(wafer="W001", doe="DOE_A", die=5, cage="C1", device="DEV01")
    measure_id = db.insert_measurement(dut_id=dut_id,
-                              session_name="SPCM_20260205",
-                              operator="Auto")
+                                      session_name="SPCM_20260205",
+                                      operator="Auto")
    session_id = db.insert_session(measure_id, session_idx=0)
    data_id = db.insert_rawdata_file(session_id=session_id,
-                            data_type="SPCM",
-                            file_name="demo.csv",
-                            file_path="RawDataFiles/demo.csv")
+                                    data_type="SPCM",
+                                    file_name="demo.csv",
+                                    file_path="RawDataFiles/demo.csv")
    db.insert_optical_info(data_id,
-                     input_channel="1",
-                     output_channel="2",
-                     input_power="0 dBm",
-                     wavelength_start=1525,
-                     wavelength_stop=1575,
-                     sweep_rate=100)
+                          input_channel="1",
+                          output_channel="2",
+                          input_power="0 dBm",
+                          wavelength_start=1525,
+                          wavelength_stop=1575,
+                          sweep_rate=100)
    db.insert_electric_info(data_id,
-                     element="SMU",
-                     channel="1",
-                     set_mode="VOLT",
-                     set_value="3.3 V")
+                           element="SMU",
+                           channel="1",
+                           set_mode="VOLT",
+                           set_value="3.3 V")
    db.insert_another_info(data_id, "note", "baseline")
    db.insert_conditions(measure_id, {"temperature": (25, "°C")})
    analysis_id = db.insert_analysis(session_id=session_id,
-                            analysis_type="basic_spectrum_analysis",
-                            instance_no=0,
-                            algorithm="valley_scan",
-                            version="1.0.0")
+                                    analysis_type="basic_spectrum_analysis",
+                                    instance_no=0,
+                                    algorithm="valley_scan",
+                                    version="1.0.0")
    db.insert_sources(analysis_id, data_id)
 ```
 
