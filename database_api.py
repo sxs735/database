@@ -26,6 +26,7 @@ class DatabaseAPI:
     TABLE_ANALYSIS_SOURCES = "AnalysisSources"
     TABLE_FEATURES = "Features"
     TABLE_METRICS = "FeatureMetrics"
+    RAW_DATA_FOLDER = "RawDataFiles"
     MAIN_PATTERN = re.compile(r"""
                               ^(?P<datatype>[^_]+)
                               _(?P<wafer>[^_]+)
@@ -1099,12 +1100,12 @@ class DatabaseAPI:
         """
 
         folder = Path(folder_path)
-        # 先解析資料夾，拆出合規檔案與命名失敗清單
+        # 解析輸入資料夾，將符合命名規範的檔案與不合規檔案分開
         valid_files, invalid_files = self.parse_folder(folder)
-        target_root_path = Path(self.db_path).parent / "RawDataFiles"
+        target_root_path = Path(self.db_path).parent / self.RAW_DATA_FOLDER
 
         try:
-            # 若資料庫尚未建立則依 schema 初始化
+            # 若資料庫不存在則依 schema 初始化（已存在會拋例外並忽略）
             self.create_db(schema_file)
         except Exception:
             pass
@@ -1112,14 +1113,14 @@ class DatabaseAPI:
         tested_timestamp = folder.stat().st_birthtime
         move_path = []
         try:
-            # 使用交易確保整批匯入原子性
+            # 使用交易確保整批匯入的原子性
             self.conn.execute("BEGIN")
             for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
                 file_info = dict(file_info_raw)
                 session_name = folder.name
                 repeat_folder = r"#" + file_info["repeat"]
                 session_idx = int(file_info["repeat"])
-                # 依檔名資訊建立資料儲存層級
+                # 依檔名資訊建立資料儲存層級，確保相同結構下存放原始檔
                 target_dir = (target_root_path/ 
                               file_info["wafer"]/ 
                               file_info["doe"]/ 
@@ -1128,6 +1129,7 @@ class DatabaseAPI:
                               f"die{file_info['die']}"/ session_name/ repeat_folder)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
+                relative_dst = dst.relative_to(target_root_path.parent)
 
                 # 寫入 DUT 與量測會話基礎資料
                 dut_id = self.insert_dut(wafer=file_info["wafer"],
@@ -1149,12 +1151,6 @@ class DatabaseAPI:
 
                 session_id = self.insert_session(measure_id, session_idx, commit=False)
 
-                data_id = self.insert_rawdata_file(session_id=session_id,
-                                                   data_type=file_info["datatype"],
-                                                   recorded_at=filepath.stat().st_mtime,
-                                                   file_path=str(dst),
-                                                   file_name=filepath.name,
-                                                   commit=False)
                 smu_entries = file_info.pop("SMU")
                 arguments = file_info.pop("arguments")
 
@@ -1163,10 +1159,25 @@ class DatabaseAPI:
                 sweep_rate=None
 
                 if file_info["datatype"] in ["SPCM"]:
-                    head, _ = read_spectrum(filepath)
-                    wavelength_start=head["WavelengthStart"]
-                    wavelength_stop=head["WavelengthStop"]
-                    sweep_rate=head["SweepRate"]
+                    # SPCM 需要先解析內容以取得光學設定，同時另存壓縮版
+                    setting, data = read_spectrum(filepath)
+                    wavelength_start=setting["WavelengthStart"]
+                    wavelength_stop=setting["WavelengthStop"]
+                    sweep_rate=setting["SweepRate"]
+
+                    move_path.append((filepath, dst))
+                    filepath = filepath.parent / filepath.name.replace("SPCM", "SPCMs")
+                    save_spectrum_lite(setting, data, filepath)
+                    dst = target_dir / filepath.name
+                    relative_dst = dst.relative_to(target_root_path.parent)
+
+
+                data_id = self.insert_rawdata_file(session_id=session_id,
+                                                   data_type=file_info["datatype"],
+                                                   recorded_at=filepath.stat().st_mtime,
+                                                   file_path=str(relative_dst),
+                                                   file_name=filepath.name,
+                                                   commit=False)
 
                 # 儲存光學/電性設定與其它參數
                 self.insert_optical_info(data_id=data_id,
@@ -1193,7 +1204,7 @@ class DatabaseAPI:
 
                 move_path.append((filepath, dst))
             self.conn.commit()
-            # 移動或複製檔案至目標資料夾
+            # 交易完成後移動或複製檔案，避免 I/O 影響 DB 寫入
             #for src, dst in tqdm(move_path, desc="Moving", unit="file"):
                 #shutil.move(str(src), str(dst))
                 #shutil.copy2(str(src), str(dst))
@@ -1213,3 +1224,23 @@ class DatabaseAPI:
             raise
         print(f"匯入資料庫完成")
  
+    def MRM_SPCM_analysis_by_session(self,session_id,commit=True):
+        spcm_data = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
+        for instance_no, info in enumerate(spcm_data):
+            filepath = Path(self.db_path).parent / info['file_path']
+            head, data = read_spectrum_lite(filepath)
+            x = data[:, 0]
+            col = 3 if data.shape[1] == 5 else 2
+            y = data[:, col] - data[:, 1]
+            result, algorithm_name, version = MRM_SPCM_analysis(x, y)
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                               analysis_type = 'MRM_SPCM_analysis',
+                                               instance_no = instance_no,
+                                               algorithm = algorithm_name,
+                                               version = version,
+                                               commit=commit)
+            self.insert_sources(analysis_id, info["data_id"], commit=commit)
+            for i in range(len(result['Valley_Wavelength'][0])):
+                feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_idx=i, commit=commit)
+                result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
+                self.insert_metrics(feature_id, result_idx, commit=commit)

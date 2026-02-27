@@ -4,74 +4,56 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-folder_list = ['260122_3',
-               '260122_4',
-               '260122_manual',
-               '260123',
-               '260127',
-               '260127_swr0.5nm',
-               '260127_swr1nm',
-               '260127_swr10nm',
-               '260129',
-               '260204_cage158_D4_repeat20',
-               '260205_cage158_D4_5die',
-               '260205_cage158_D4_die51',
-               '260205_mapping',
-               '260206_mapping',
-               '260212_mapping']
-db_path = Path(r"Y:\量測資料\資料庫") / "DataBase.db"
+# folder_list = ['260122_3',
+#                '260122_4',
+#                '260122_manual',
+#                '260123',
+#                '260127',
+#                '260127_swr0.5nm',
+#                '260127_swr1nm',
+#                '260127_swr10nm',
+#                '260129',
+#                '260204_cage158_D4_repeat20',
+#                '260205_cage158_D4_5die',
+#                '260205_cage158_D4_die51',
+#                '260205_mapping',
+#                '260206_mapping',
+#                '260212_mapping']
+db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase.db"
+folder_list = ['20260202']
 #%%
+# Optional batch import step for freshly measured folders
 for folder_i in folder_list[:]:
     print(folder_i)
-    folder_path = Path(f"D:\\processing\\資料庫整理\\{folder_i}")
+    folder_path = Path(f"C:\\Users\\mg942\\Desktop\\元澄\\PIC9-FPN3_DOE1_MRM033_DC&RF_3dB\\{folder_i}")
     with DatabaseAPI(db_path) as db:
         db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
-        #a,b = db.parse_folder(folder_path)
-        #c = db.parse_filename(b[0])
-#%% Processing cage: cage158, measure_name: 260127_swr0.5nm
+#%%
+# Build the cage/measure_name combinations to analyze, skipping cage2
 with DatabaseAPI(db_path) as db:  
     cmd = '''SELECT DISTINCT d.cage,m.measure_name
              FROM DUT d
              JOIN Measurement m ON d.DUT_id = m.DUT_id
-             WHERE d.device <> 'WDM'
+             WHERE d.cage <> 'cage2'
              ORDER BY d.cage, m.measure_name;'''
     res = [(res['cage'], res['measure_name']) for res in db.query(cmd)]
+
 #%%
-for cage, measure_name in res[5:]:
+# Run the MRM_SPCM analysis for every relevant session
+for cage, measure_name in res[:]:
     print(f"Processing cage: {cage}, measure_name: {measure_name}")
     with DatabaseAPI(db_path) as db:
         session_ids = db.select_session_ids_by_measure_name_and_cage(measure_name = measure_name,cage = cage)
-        processing_plan = []
-        total_spcm = 0
-        for session_id in session_ids:
-            spcm_data = db.select_data_ids_paths_by_session(session_id, data_type='SPCM')
-            processing_plan.append((session_id, spcm_data))
-            total_spcm += len(spcm_data)
-
-        with tqdm(total=total_spcm, desc="Analyzing MRM SPCM", unit="file") as pbar:
-            for session_id, spcm_data in processing_plan:
-                for instance_no, info in enumerate(spcm_data):
-                    filepath = info['file_path']
-                    head, data = read_spectrum(filepath)
-                    x = data[:, 0]
-                    col = 3 if data.shape[1] == 5 else 2
-                    y = data[:, col] - data[:, 1]
-                    result, algorithm_name, version = MRM_SPCM_analysis(x, y)
-                    analysis_id = db.insert_analysis(session_id = session_id,
-                                                    analysis_type = 'MRM_SPCM_analysis',
-                                                    instance_no = instance_no,
-                                                    algorithm = algorithm_name,
-                                                    version = version,
-                                                    commit=False)
-                    db.insert_sources(analysis_id, info["data_id"], commit=False)
-                    for i in range(len(result['Valley_Wavelength'][0])):
-                        feature_id = db.insert_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_idx=i)
-                        result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
-                        db.insert_metrics(feature_id, result_idx, commit=False)
-                    pbar.update(1)
+        for session_id in tqdm(session_ids, desc="Sessions"):
+           db.MRM_SPCM_analysis_by_session(session_id,commit=False)
         db.conn.commit()
-    
+
+
+
+
+
 #%%  
+# Alternate query example: exclude WDM devices to inspect combinations quickly
 with DatabaseAPI(db_path) as db:  
     cmd = '''SELECT DISTINCT d.cage,m.measure_name
              FROM DUT d
@@ -87,24 +69,28 @@ with DatabaseAPI(db_path) as db:
     
 
 #%%
+# Export a full database snapshot for sharing/reporting
 with DatabaseAPI(db_path) as db:
     output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")   
 # %%
+# Manual transaction control helper (when a previous block fails mid-way)
 with DatabaseAPI(db_path) as db:
     db.conn.rollback()
 # %%
 import sqlite3
 
+# Quick integrity check to ensure the SQLite file is healthy
 conn = sqlite3.connect(db_path)
 print(conn.execute("PRAGMA integrity_check;").fetchone())
 # %%
 import matplotlib.pyplot as plt
-cage='cage158'
-measure_name='260127_swr0.5nm'
+cage='cage1'
+measure_name='20260202'
+# Quick-look plot to visually inspect the first SPCM trace in a session
 with DatabaseAPI(db_path) as db:
     session_ids = db.select_session_ids_by_measure_name_and_cage(measure_name = measure_name,cage = cage)
     spcm_data = db.select_data_ids_paths_by_session(session_ids[0], data_type='SPCM')
-    filepath = spcm_data[0]['file_path']
+    filepath = Path(db_path).parent / spcm_data[0]['file_path']
     head, data = read_spectrum(filepath)
     x = data[:, 0]
     col = 3 if data.shape[1] == 5 else 2

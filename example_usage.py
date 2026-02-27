@@ -41,7 +41,8 @@ def example_2_insert_basic_data():
                                operator="張三",
                                system="v1.0",
                                notes="第一次測量")
-        print(f"✓ 插入測量會話，ID: {measure_id}")
+        session_id = db.insert_session(measure_id=measure_id, session_idx=1)
+        print(f"✓ 插入測量會話，measure_id: {measure_id}, session_id: {session_id}")
         
         # 插入實驗條件（支援無單位和有單位兩種格式）
         db.insert_conditions(measure_id, {'temperature': (25.0, '°C'),
@@ -50,10 +51,11 @@ def example_2_insert_basic_data():
         print(f"✓ 插入實驗條件")
         
         # 插入測量數據
-        data_id = db.insert_rawdata_file(measure_id=measure_id,
-                     session_idx=1,
-                             data_type="spectrum",
-                             file_path="/data/spectrum_001.csv")
+        data_id = db.insert_rawdata_file(session_id=session_id,
+                             data_type="SPCM",
+                             file_name="spectrum_001.csv",
+                             file_path="/data/spectrum_001.csv",
+                             recorded_at=datetime.now())
         print(f"✓ 插入測量數據，ID: {data_id}\n")
 
         # 插入光學/電性資訊
@@ -64,14 +66,22 @@ def example_2_insert_basic_data():
                                wavelength_start=1525.0,
                                wavelength_stop=1575.0,
                                sweep_rate=100.0)
-        db.insert_electric_info(data_id, [
-            {"element": "SMU", "channel": "1", "set_mode": "VOLT", "set_value": 3.3},
-            {"element": "SMU", "channel": "2", "set_mode": "CURR", "set_value": 0.01}
-        ])
-        db.insert_another_info(data_id, {
-            "note": "demo entry",
-            "wavelength_step": (0.01, "nm")
-        })
+        db.insert_electric_info(data_id,
+                                element="SMU",
+                                channel="1",
+                                set_mode="VOLT",
+                                set_value="3.3 V")
+        db.insert_electric_info(data_id,
+                                element="SMU",
+                                channel="2",
+                                set_mode="CURR",
+                                set_value="10 mA")
+        db.insert_another_info(data_id,
+                               info_key="note",
+                               info_value="demo entry")
+        db.insert_another_info(data_id,
+                               info_key="wavelength_step",
+                               info_value="0.01 nm")
         print("✓ 插入光學、電性與其他資訊")
 
 
@@ -80,38 +90,38 @@ def example_3_insert_analysis_data():
     print("=" * 50)
     print("範例 3: 插入分析數據")
     print("=" * 50)
-    
-    with DatabaseAPI("example.db") as db:
-        # 假設我們已經有一個 measure_id = 1
-        measure_id = 1
-        
-        # 創建分析執行
-        analysis_id = db.insert_analysis(measure_id=measure_id,
-                 session_idx=1,
-                             analysis_type="peak_detection",
-                             instance_no=0,
-                             algorithm="peak_detector",
-                             version="1.0.0")
-        print(f"✓ 插入分析執行，ID: {analysis_id}")
+    target_measure = "光譜測量_2026_01_30"
 
-        # 將測量數據綁定為分析輸入
-        data_list = db.select_rawdata_by_session_id(measure_id)
-        if data_list:
-            data_ids = [item['data_id'] for item in data_list]
-            for data_id in data_ids:
-                db.insert_sources(analysis_id, data_id)
-            print(f"✓ 綁定 {len(data_ids)} 筆測量數據為分析輸入")
+    with DatabaseAPI("example.db") as db:
+        session_ids = db.select_session_ids_by_measure_name(target_measure)
+        if not session_ids:
+            print(f"✗ 找不到量測 {target_measure} 的 session")
+            return
+
+        session_id = session_ids[0]
+        data_rows = db.select_data_ids_paths_by_session(session_id, data_type='SPCM')
+        if not data_rows:
+            print("✗ 此 session 尚無 SPCM 原始檔")
+            return
+
+        analysis_id = db.insert_analysis(session_id=session_id,
+                                         analysis_type="peak_detection",
+                                         instance_no=0,
+                                         algorithm="peak_detector",
+                                         version="1.0.0")
+        print(f"✓ 插入分析執行，analysis_id: {analysis_id}")
+
+        for row in data_rows:
+            db.insert_sources(analysis_id, row['data_id'])
+        print(f"✓ 綁定 {len(data_rows)} 筆測量數據為分析輸入")
         
-        # 插入檢測到的峰值
         for i in range(3):  # 假設檢測到 3 個峰值
             feature_id = db.insert_feature(analysis_id=analysis_id,
-                                                    feature_type="peak",
-                                                    feature_idx=i)
-            
-            # 為每個峰值插入特徵值（支援無單位和有單位兩種格式）
+                                           feature_type="peak",
+                                           feature_idx=i)
             db.insert_metrics(feature_id, {'wavelength': (1550.0 + i * 10, 'nm'),
-                                                  'intensity': (100.0 - i * 5, 'dBm'),
-                                                  'fwhm': (2.5 + i * 0.5, 'nm')})
+                                           'intensity': (100.0 - i * 5, 'dBm'),
+                                           'fwhm': (2.5 + i * 0.5, 'nm')})
             print(f"✓ 插入峰值 {i+1}，特徵 ID: {feature_id}")
         
         print()
@@ -223,7 +233,7 @@ def example_5_query_full_session():
                     for data in analysis['inputs']:
                         print(f"        - {data['data_type']}: {data['file_path']}")
                 for feature in analysis['features']:
-                    print(f"      峰值 {feature['feature_index']}:")
+                    print(f"      峰值 {feature['feature_idx']}:")
                     for key, (value, unit) in feature['values'].items():
                         print(f"        {key}: {value} {unit if unit else ''}")
         
@@ -299,12 +309,13 @@ def example_8_batch_insert():
                                                            session_name=f"測量_{i+1}_{j+1}",
                                                            operator="李四",
                                                            system="v1.0")
+                session_id = db.insert_session(measure_id=measure_id, session_idx=j+1)
                 
                 # 添加實驗條件（支援有單位格式）
                 db.insert_conditions(measure_id, {'temperature': (25.0 + i, '°C'),
                                                                'voltage': (3.3 + j * 0.1, 'V')})
                 
-                print(f"✓ 插入 DUT {i+1} 的會話 {j+1}")
+                print(f"✓ 插入 DUT {i+1} 的會話 {j+1} (session_id={session_id})")
         
         print(f"\n批量插入完成")
         stats = db.get_database_stats()

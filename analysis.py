@@ -1,4 +1,4 @@
-import csv
+import csv,re
 import numpy as np
 import inspect
 from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
@@ -9,14 +9,35 @@ def tofloat(value):
     except (ValueError, TypeError):
         return np.nan
 
+def save_to_csv(path, rows, header=None):
+    """Write tabular data to a CSV file using UTF-8 encoding."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if header is not None:
+            writer.writerow(header)
+        for row in rows:
+            writer.writerow(row)
+
+def save_spectrum_lite(setting,data, path):
+    if setting['mode']  == 'min/max':
+            header = ['wavelength(nm)']+ [f'DaqPort{port}_{suffix}' for port in setting['DaqPort'] for suffix in ['min', 'max']]
+    else:
+        header = ['wavelength(nm)']+ [f'DaqPort{port}' for port in setting['DaqPort']]
+    save_to_csv(path, data, header=header)
+
 def read_spectrum(path,start_idx=None,end_idx=None):
+    pattern = re.compile(r'^DaqPort(\d+)$')
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
-        head = {}
+        setting = {'DaqPort': []}
         data = []
         for i,row in enumerate(reader):
-            if start_idx is None and ('=== Min' in row or '=== Average IL (TLS 0) ===' in row):
+            if start_idx is None and '=== Min' in row:
                 start_idx = i
+                setting['mode'] = 'min/max'
+            elif start_idx is not None and '=== Average ER (TLS 0) ===' in row:
+                start_idx = i
+                setting['mode'] = 'average'
             elif end_idx is None and '=== Mueller Row 1 (TLS 0) ==='in row:
                 break
             elif start_idx is not None:
@@ -26,14 +47,28 @@ def read_spectrum(path,start_idx=None,end_idx=None):
                   or 'WavelengthStop' in row 
                   or 'WavelengthStep' in row 
                   or 'SweepRate' in row):
-                head[row[0]] = row[1]+row[2]
+                setting[row[0]] = f'{row[1]}({row[2]})'
+            elif match := pattern.match(row[0]):
+                setting['DaqPort'] += [match.group(1)]
 
         if start_idx is not None:
             data = np.array(data, dtype=float)
             data[:,0] *= 1E9
         else:
             raise ValueError("Don't support this file format")
-    return head, data
+    return setting, data
+
+def read_spectrum_lite(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        head = []
+        data = []
+        for i, row in enumerate(reader):
+            if i==0:
+                head = row
+            else:
+                data += [[tofloat(value) for value in row]]
+    return head, np.array(data, dtype=float)
 
 def read_ssrf(path):
     """

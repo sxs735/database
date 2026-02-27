@@ -8,7 +8,7 @@ This repository contains a lightweight SQLite schema plus helper scripts for ing
 |------|-------------|
 | `schema.sql` | DDL for DUT / measurement / analysis tables including the `AnalysisSources` bridge. |
 | `database_api.py` | High-level API for creating the database, importing folders, querying metadata, and writing analytics. |
-| `analysis.py` | CSV reader utilities (currently tailored for SPCM exports). |
+| `analysis.py` | CSV reader/writer utilities (SPCM helpers plus `save_to_csv`). |
 | `main.py` | Example workflow that imports folders, runs a baseline spectral analysis, and exports to Excel. |
 | `example_usage.py` | Standalone demos showing how to call each API method. |
 
@@ -29,18 +29,18 @@ pip install -r requirements.txt  # or install the packages listed above
    ```python
    from database_api import DatabaseAPI
 
-      with DatabaseAPI("Measurement.db") as db:
-         db.create_db("schema.sql")
+   with DatabaseAPI("Measurement.db") as db:
+       db.create_db("schema.sql")
    ```
 
 2. **Import measurement folders** (see `main.py` for a full loop):
    ```python
-      with DatabaseAPI("Measurement.db") as db:
-         db.import_session_folder(r"C:\data\PIC9_batch", schema_file="schema.sql")
+   with DatabaseAPI("Measurement.db") as db:
+       db.import_from_measurement_folder(r"C:\data\PIC9_batch", schema_file="schema.sql")
    ```
 
 3. **Run analyses**
-   `main.py` demonstrates how to iterate through unprocessed measurements, level spectra, locate valleys, compute FSR/FWHM/Q, and store results in `Analyses`, `Features`, and `FeatureMetrics` while linking the raw data via `AnalysisSources`.
+   `main.py` loops over cage/measure-name pairs, pulls every `MeasureSession`, and hands each session to `DatabaseAPI.MRM_SPCM_analysis_by_session()` while displaying progress with `tqdm`. The helper stores FSR/FWHM/Q metrics into `Analyses`, `Features`, and `FeatureMetrics`, wiring sources through `AnalysisSources` in one pass.
 
 4. **Export**
    ```python
@@ -65,21 +65,37 @@ The API wraps common insert/query/delete patterns.
 ```python
 with DatabaseAPI("Measurement.db") as db:
    dut_id = db.insert_dut(wafer="W001", doe="DOE_A", die=5, cage="C1", device="DEV01")
-   measure_id = db.insert_session(dut_id, session_name="SPCM_20260205")
-   data_id = db.insert_rawdata_file(measure_id, session_idx=0, data_type="SPCM", file_path=".../file.csv")
-   db.insert_optical_info(data_id, input_channel="1", output_channel="2", input_power="0 dBm", wavelength_start=1525, wavelength_stop=1575, sweep_rate=100)
-   db.insert_electric_info(data_id, [{"element": "SMU", "channel": "1", "set_mode": "VOLT", "set_value": 3.3}])
-   db.insert_another_info(data_id, {"note": "baseline", "wavelength_step": (0.01, "nm")})
+   measure_id = db.insert_measurement(dut_id=dut_id,
+                              session_name="SPCM_20260205",
+                              operator="Auto")
+   session_id = db.insert_session(measure_id, session_idx=0)
+   data_id = db.insert_rawdata_file(session_id=session_id,
+                            data_type="SPCM",
+                            file_name="demo.csv",
+                            file_path="RawDataFiles/demo.csv")
+   db.insert_optical_info(data_id,
+                     input_channel="1",
+                     output_channel="2",
+                     input_power="0 dBm",
+                     wavelength_start=1525,
+                     wavelength_stop=1575,
+                     sweep_rate=100)
+   db.insert_electric_info(data_id,
+                     element="SMU",
+                     channel="1",
+                     set_mode="VOLT",
+                     set_value="3.3 V")
+   db.insert_another_info(data_id, "note", "baseline")
    db.insert_conditions(measure_id, {"temperature": (25, "°C")})
-   db.insert_analysis(measure_id,
-                      session_idx=0,
-                      analysis_type="basic_spectrum_analysis",
-                      instance_no=0,
-                      algorithm="valley_scan",
-                      version="1.0.0")
+   analysis_id = db.insert_analysis(session_id=session_id,
+                            analysis_type="basic_spectrum_analysis",
+                            instance_no=0,
+                            algorithm="valley_scan",
+                            version="1.0.0")
+   db.insert_sources(analysis_id, data_id)
 ```
 
-Query helpers include `get_session_details()`, `list_analysis_inputs()`, and `search_metrics()`.
+Query helpers include `select_session_details()`, `select_data_ids_paths_by_session()`, and `select_metrics_by_value_range()`.
 
 To evolve the schema safely, leverage `add_column()` which skips work if the column already exists:
 
