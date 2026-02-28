@@ -545,16 +545,40 @@ class DatabaseAPI:
         rows = self.query(sql, (measure_name,))
         return [row["session_id"] for row in rows]
     
-    def select_session_ids_by_measure_name_and_cage(self, measure_name: str, cage: str) -> List[int]:
+    def select_session_ids_by_measure_name_and_dut(self,
+                                                   measure_name: str,
+                                                   wafer: Optional[str] = None,
+                                                   doe: Optional[str] = None,
+                                                   die: Optional[int] = None,
+                                                   cage: Optional[str] = None,
+                                                   device: Optional[str] = None) -> List[int]:
+        """根據 measure_name 以及可選的 DUT 條件取得 session_id 列表。"""
         sql = f"""SELECT ms.session_id
                   FROM {self.TABLE_MEASURE_SESSIONS} ms
                   JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
                   JOIN {self.TABLE_DUT} d ON m.DUT_id = d.DUT_id
-                  WHERE m.measure_name = ?
-                  AND d.cage = ?
-                  ORDER BY ms.session_idx"""
-        
-        rows = self.query(sql, (measure_name, cage))
+                  WHERE m.measure_name = ?"""
+        params: List[Any] = [measure_name]
+
+        if wafer is not None:
+            sql += " AND d.wafer = ?"
+            params.append(wafer)
+        if doe is not None:
+            sql += " AND d.DOE = ?"
+            params.append(doe)
+        if die is not None:
+            sql += " AND d.die = ?"
+            params.append(die)
+        if cage is not None:
+            sql += " AND d.cage = ?"
+            params.append(cage)
+        if device is not None:
+            sql += " AND d.device = ?"
+            params.append(device)
+
+        sql += " ORDER BY ms.session_idx"
+
+        rows = self.query(sql, tuple(params))
         return [row["session_id"] for row in rows]
 
     def select_sessions_by_dut_id(self, dut_id: int) -> List[Dict[str, Any]]:
@@ -1244,3 +1268,42 @@ class DatabaseAPI:
                 feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_idx=i, commit=commit)
                 result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
                 self.insert_metrics(feature_id, result_idx, commit=commit)
+
+    def MRM_OMA_analysis_by_session(self,session_id,commit=True):
+        spcm_info = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
+        modulated_spcm = {}
+        for data in spcm_info:
+            electric_info = self.select_electric_info_by_data_id(data['data_id'])[0]
+            if electric_info['element'] =='pn':
+                voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
+                modulated_spcm[voltage] = data
+
+        modulated_voltage = np.array(list(modulated_spcm.keys()))
+        non_modulated_idx = np.argmin(np.square(modulated_voltage))
+        max_modulated_idx = np.argmax(np.square(modulated_voltage))
+        non_modulated_info = modulated_spcm[modulated_voltage[non_modulated_idx]]
+        max_modulated_info = modulated_spcm[modulated_voltage[max_modulated_idx]]
+
+        non_modulated_path = non_modulated_info['file_path']
+        max_modulated_path = max_modulated_info['file_path']
+        
+        _,modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / max_modulated_path)
+        _,non_modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / non_modulated_path)
+        result, algorithm_name, version = MRM_OMA_analysis(modulated_spcm, 
+                                                            non_modulated_spcm, start=1310, end=1315)
+        
+        delta_modulated_voltage = abs(modulated_voltage[max_modulated_idx] - modulated_voltage[non_modulated_idx])
+        modulated_efficiency = (result['Delta Wavelength'][0]/delta_modulated_voltage)
+        result['Delta Voltage'] = (float(round(delta_modulated_voltage,3)), 'V')
+        result['Modulated Efficiency'] = (float(round(modulated_efficiency,3)), 'pm/V')
+        analysis_id = self.insert_analysis(session_id = session_id,
+                                            analysis_type = 'MRM_OMA_analysis',
+                                            instance_no = 0,
+                                            algorithm = algorithm_name,
+                                            version = version,
+                                            commit=False)
+        self.insert_sources(analysis_id, non_modulated_info["data_id"], commit=False)
+        self.insert_sources(analysis_id, max_modulated_info["data_id"], commit=False)
+        feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='oma_parameters', feature_idx=0, commit=False)
+        result = {key:(result[key][0],result[key][1]) for key in result}
+        self.insert_metrics(feature_id, result, commit=False)

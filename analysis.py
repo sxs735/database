@@ -276,31 +276,33 @@ def MRM_SSRF_analysis(frequency,
             inspect.currentframe().f_code.co_name,
             version)
 
-def MRM_OMA_analysis(vh_path, v0_path, start=1305, end=1315):
+def MRM_OMA_analysis(modulated_spcm, non_modulated_spcm, start=1305, end=1315):
     version = '1.0.0'
-    _,vh = read_spectrum(vh_path)
-    _,v0 = read_spectrum(v0_path)
-    
-    start_idx = np.abs(v0[:,0] - start).argmin()
-    end_idx = np.abs(v0[:,0] - end).argmin()
-    vh = vh[start_idx:end_idx]
-    v0 = v0[start_idx:end_idx]
-    ref_i = 3 if v0.shape[1] == 5 else 2
-    wavelength = v0[:, 0]
-    loss_vh =vh[:, ref_i] - vh[:, 1]
-    loss_v0 =v0[:, ref_i] - v0[:, 1]
+
+    start_idx = np.abs(non_modulated_spcm[:,0] - start).argmin()
+    end_idx = np.abs(non_modulated_spcm[:,0] - end).argmin()
+    modulated_spcm = modulated_spcm[start_idx:end_idx]
+    non_modulated_spcm = non_modulated_spcm[start_idx:end_idx]
+
+    ref_i = 3 if non_modulated_spcm.shape[1] == 5 else 2
+    wavelength = non_modulated_spcm[:, 0]
+    loss_vh =modulated_spcm[:, ref_i] - modulated_spcm[:, 1]
+    loss_v0 =non_modulated_spcm[:, ref_i] - non_modulated_spcm[:, 1]
     diffT = 10**(loss_vh/10)-10**(loss_v0/10)
     vaild_value = ~np.isnan(diffT)
     diffT = diffT[vaild_value]
     loss_v0  = loss_v0[vaild_value]
+    loss_vh  = loss_vh[vaild_value]
     wavelength = wavelength[vaild_value]
     #diffT = savgol_filter(diffT,17,3)
     oma_wl = wavelength[diffT.argmax()]
-    valley_wl = wavelength[loss_v0.argmin()]
-    detuning =  oma_wl-valley_wl
-    result = {'oma wavelength': (round(oma_wl,3), 'nm'),
-              'valley wavelength': (round(valley_wl,3), 'nm'),
-              'detuning': (round(detuning,3), 'nm')}
+    valley_v0 = wavelength[loss_v0.argmin()]
+    valley_vh = wavelength[loss_vh.argmin()]
+    delta_wl = (valley_vh - valley_v0)*1000
+    detuning =  oma_wl-valley_v0
+    result = {'OMA Wavelength': (float(round(oma_wl,3)), 'nm'),
+              'Delta Wavelength': (float(round(delta_wl,3)), 'pm'),
+              'Detuning': (float(round(detuning,3)), 'nm')}
 
     return (result,
             inspect.currentframe().f_code.co_name,

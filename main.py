@@ -38,14 +38,21 @@ with DatabaseAPI(db_path) as db:
              ORDER BY d.cage, m.measure_name;'''
     res = [(res['cage'], res['measure_name']) for res in db.query(cmd)]
 
-#%%
-# Run the MRM_SPCM analysis for every relevant session
+#%%     Run the MRM_SPCM analysis for every relevant session
 for cage, measure_name in res[:]:
     print(f"Processing cage: {cage}, measure_name: {measure_name}")
     with DatabaseAPI(db_path) as db:
-        session_ids = db.select_session_ids_by_measure_name_and_cage(measure_name = measure_name,cage = cage)
+        session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
         for session_id in tqdm(session_ids, desc="Sessions"):
            db.MRM_SPCM_analysis_by_session(session_id,commit=False)
+        db.conn.commit()
+#%%     Run the MRM_OMA analysis for every relevant session
+for cage, measure_name in res[:]:
+    print(f"Processing cage: {cage}, measure_name: {measure_name}")
+    with DatabaseAPI(db_path) as db:
+        session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
+        for session_id in tqdm(session_ids, desc="Sessions"):
+            db.MRM_OMA_analysis_by_session(session_id,commit=False)
         db.conn.commit()
 
 
@@ -83,19 +90,24 @@ import sqlite3
 conn = sqlite3.connect(db_path)
 print(conn.execute("PRAGMA integrity_check;").fetchone())
 # %%
+#%matplotlib qt
 import matplotlib.pyplot as plt
 cage='cage1'
 measure_name='20260202'
 # Quick-look plot to visually inspect the first SPCM trace in a session
 with DatabaseAPI(db_path) as db:
-    session_ids = db.select_session_ids_by_measure_name_and_cage(measure_name = measure_name,cage = cage)
-    spcm_data = db.select_data_ids_paths_by_session(session_ids[0], data_type='SPCM')
-    filepath = Path(db_path).parent / spcm_data[0]['file_path']
-    head, data = read_spectrum(filepath)
-    x = data[:, 0]
-    col = 3 if data.shape[1] == 5 else 2
-    y = data[:, col] - data[:, 1]
-    res = MRM_SPCM_analysis(x, y)
-    plt.plot(x,y)
+    non_info = db.select_rawdata_by_data_id(1809)
+    max_info = db.select_rawdata_by_data_id(1807)
+    filepath_v0 = Path(db_path).parent / non_info['file_path']
+    filepath_vh = Path(db_path).parent / max_info['file_path']
+    head, data_v0 = read_spectrum_lite(filepath_v0)
+    head, data_vh = read_spectrum_lite(filepath_vh)
+    x = data_v0[:, 0]
+    col = 3 if data_v0.shape[1] == 5 else 2
+    y0 = data_v0[:, col] - data_v0[:, 1]
+    yh = data_vh[:, col] - data_vh[:, 1]
+    res,_,_ = MRM_OMA_analysis(data_vh, data_v0, start=1310, end=1315)
+    plt.plot(x,y0)
+    plt.plot(x,yh)
     plt.show()
 # %%
