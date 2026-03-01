@@ -1264,8 +1264,8 @@ class DatabaseAPI:
                                                version = version,
                                                commit=commit)
             self.insert_sources(analysis_id, info["data_id"], commit=commit)
-            for i in range(len(result['Valley_Wavelength'][0])):
-                feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='basic parameters', feature_idx=i, commit=commit)
+            for i in range(len(result['Valley Wavelength'][0])):
+                feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='Basic parameters', feature_idx=i, commit=commit)
                 result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
                 self.insert_metrics(feature_id, result_idx, commit=commit)
 
@@ -1294,16 +1294,67 @@ class DatabaseAPI:
         
         delta_modulated_voltage = abs(modulated_voltage[max_modulated_idx] - modulated_voltage[non_modulated_idx])
         modulated_efficiency = (result['Delta Wavelength'][0]/delta_modulated_voltage)
-        result['Delta Voltage'] = (float(round(delta_modulated_voltage,3)), 'V')
+        result['Modulated Voltage'] = (float(round(delta_modulated_voltage,3)), 'V')
         result['Modulated Efficiency'] = (float(round(modulated_efficiency,3)), 'pm/V')
         analysis_id = self.insert_analysis(session_id = session_id,
                                             analysis_type = 'MRM_OMA_analysis',
                                             instance_no = 0,
                                             algorithm = algorithm_name,
                                             version = version,
-                                            commit=False)
-        self.insert_sources(analysis_id, non_modulated_info["data_id"], commit=False)
-        self.insert_sources(analysis_id, max_modulated_info["data_id"], commit=False)
-        feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='oma_parameters', feature_idx=0, commit=False)
+                                            commit=commit)
+        self.insert_sources(analysis_id, non_modulated_info["data_id"], commit=commit)
+        self.insert_sources(analysis_id, max_modulated_info["data_id"], commit=commit)
+        feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='OMA parameters', feature_idx=0, commit=commit)
         result = {key:(result[key][0],result[key][1]) for key in result}
-        self.insert_metrics(feature_id, result, commit=False)
+        self.insert_metrics(feature_id, result, commit=commit)
+
+    def MRM_tuning_analysis_by_session(self,session_id,commit=True):
+        spcm_info = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
+        dciv_info = self.select_data_ids_paths_by_session(session_id, data_type='DCIV')
+        
+        spcm = {}
+        for data in spcm_info:
+            electric_info = self.select_electric_info_by_data_id(data['data_id'])[0]
+            if electric_info['element'] =='heat':
+                voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
+                spcm[voltage] = data
+        dciv = {}
+        for data in dciv_info:
+            electric_info = self.select_electric_info_by_data_id(data['data_id'])[0]
+            if electric_info['element'] =='heat':
+                voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
+                electric_data = read_dcvi(Path(self.db_path).parent / data['file_path'])
+                resistance = electric_data['measured voltage'][0]/electric_data['measured current'][0] if electric_data['measured current'][0] != 0 else float('inf')
+                power = electric_data['measured voltage'][0]*electric_data['measured current'][0]*1000
+                data['resistance'] = resistance
+                data['power'] = power
+                dciv[voltage] = data
+
+        modulated_voltage = np.array(list(spcm.keys()))
+        sorted_index = np.argsort(modulated_voltage)
+        non_modulated_info = spcm[modulated_voltage[sorted_index[0]]]
+        non_modulated_path = non_modulated_info['file_path']
+        _,non_modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / non_modulated_path)
+        for no, idx in enumerate(sorted_index[1:]):
+            voltage = modulated_voltage[idx]
+            modulated_info = spcm[float(voltage)]
+            modulated_path = modulated_info['file_path']
+            dciv_info = dciv[voltage]
+            _,modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / modulated_path)
+            result, algorithm_name, version = MRM_tuning_analysis(modulated_spcm, 
+                                                                non_modulated_spcm, start=1310, end=1315)
+            result['Tuning Efficiency'] = (round(result['Delta Frequency'][0]/dciv_info['power'],3), 'GHz/mW')
+            result['Heater resistance'] = (round(dciv_info['resistance'], 3), 'Ohm')
+        
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                            analysis_type = 'MRM_tuning_analysis',
+                                            instance_no = no,
+                                            algorithm = algorithm_name,
+                                            version = version,
+                                            commit=commit)
+            self.insert_sources(analysis_id, non_modulated_info["data_id"], commit=commit)
+            self.insert_sources(analysis_id, modulated_info["data_id"], commit=commit)
+            self.insert_sources(analysis_id, dciv_info["data_id"], commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='Tuning parameters', feature_idx=0, commit=commit)
+            result = {key:(result[key][0],result[key][1]) for key in result}
+            self.insert_metrics(feature_id, result, commit=commit)

@@ -200,8 +200,8 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
                'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
                'FWHM(GHz)': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
                'Q factor': (np.round(Q, 0).tolist(), ''),
-               'Valley_Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
-               'Valley_Frequency': (np.round(frequency_x, 3).tolist(), 'THz')}
+               'Valley Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
+               'Valley Frequency': (np.round(frequency_x, 3).tolist(), 'THz')}
 
     # 檢查是否找到足夠的谷值
     if len(valley_idx) < 2 and len(valley_idx) > 0:
@@ -302,7 +302,38 @@ def MRM_OMA_analysis(modulated_spcm, non_modulated_spcm, start=1305, end=1315):
     detuning =  oma_wl-valley_v0
     result = {'OMA Wavelength': (float(round(oma_wl,3)), 'nm'),
               'Delta Wavelength': (float(round(delta_wl,3)), 'pm'),
-              'Detuning': (float(round(detuning,3)), 'nm')}
+              'Detuning': (float(round(detuning,3)), 'nm'),
+              'Valley Wavelength 0': (float(round(valley_v0,3)), 'nm'),
+              'Valley Wavelength 1': (float(round(valley_vh,3)), 'nm')}
+
+    return (result,
+            inspect.currentframe().f_code.co_name,
+            version)
+
+def MRM_tuning_analysis(modulated_spcm, non_modulated_spcm, start=1305, end=1315):
+    version = '1.0.0'
+
+    start_idx = np.abs(non_modulated_spcm[:,0] - start).argmin()
+    end_idx = np.abs(non_modulated_spcm[:,0] - end).argmin()
+    modulated_spcm = modulated_spcm[start_idx:end_idx]
+    non_modulated_spcm = non_modulated_spcm[start_idx:end_idx]
+
+    ref_i = 3 if non_modulated_spcm.shape[1] == 5 else 2
+    wavelength = non_modulated_spcm[:, 0]
+    loss_vh =modulated_spcm[:, ref_i] - modulated_spcm[:, 1]
+    loss_v0 =non_modulated_spcm[:, ref_i] - non_modulated_spcm[:, 1]
+    diffT = 10**(loss_vh/10)-10**(loss_v0/10)
+    vaild_value = ~np.isnan(diffT)
+    loss_v0  = loss_v0[vaild_value]
+    loss_vh  = loss_vh[vaild_value]
+    wavelength = wavelength[vaild_value]
+
+    valley_v0 = wavelength[loss_v0.argmin()]
+    valley_vh = wavelength[loss_vh.argmin()]
+    delta_ghz = (299792.458/valley_v0 - 299792.458/valley_vh)*1000
+    result = {'Delta Frequency': (float(round(delta_ghz,3)), 'GHz'),
+              'Valley Wavelength 0': (float(round(valley_v0,3)), 'nm'),
+              'Valley Wavelength 1': (float(round(valley_vh,3)), 'nm')}
 
     return (result,
             inspect.currentframe().f_code.co_name,

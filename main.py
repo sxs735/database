@@ -38,16 +38,18 @@ with DatabaseAPI(db_path) as db:
              ORDER BY d.cage, m.measure_name;'''
     res = [(res['cage'], res['measure_name']) for res in db.query(cmd)]
 
-#%%     Run the MRM_SPCM analysis for every relevant session
-for cage, measure_name in res[:]:
+#%%
+print("Starting batch MRM_SPCM analysis...")
+for cage, measure_name in res:
     print(f"Processing cage: {cage}, measure_name: {measure_name}")
     with DatabaseAPI(db_path) as db:
         session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
         for session_id in tqdm(session_ids, desc="Sessions"):
            db.MRM_SPCM_analysis_by_session(session_id,commit=False)
         db.conn.commit()
-#%%     Run the MRM_OMA analysis for every relevant session
-for cage, measure_name in res[:]:
+#%%
+print("Starting MRM OMA analysis...")
+for cage, measure_name in res:
     print(f"Processing cage: {cage}, measure_name: {measure_name}")
     with DatabaseAPI(db_path) as db:
         session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
@@ -55,9 +57,15 @@ for cage, measure_name in res[:]:
             db.MRM_OMA_analysis_by_session(session_id,commit=False)
         db.conn.commit()
 
-
-
-
+#%%
+print("Starting MRM tuning analysis...")
+for cage, measure_name in res:
+    print(f"Processing cage: {cage}, measure_name: {measure_name}")
+    with DatabaseAPI(db_path) as db:
+        session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
+        for session_id in tqdm(session_ids, desc="Sessions"):
+            db.MRM_tuning_analysis_by_session(session_id, commit=False)
+        db.conn.commit()
 
 #%%  
 # Alternate query example: exclude WDM devices to inspect combinations quickly
