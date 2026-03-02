@@ -192,9 +192,10 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     # 計算 FWHM 和 Q factor
     Ty = 10 ** (loss_level / 10)
     wavelength_spacing = np.median(np.diff(wavelength))
-    frequency_spacing = -np.median(np.diff(frequency))
-    FWHMnm = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * wavelength_spacing
-    FWHMGHz = peak_widths(-Ty, valley_idx, rel_height=0.5)[0] * frequency_spacing
+    ips_t0_wavelength = lambda x: wavelength_spacing*x + wavelength[0]
+    widths, _, left_ips, right_ips = peak_widths(-Ty, valley_idx, rel_height=0.5)
+    FWHMnm = widths * wavelength_spacing
+    FWHMGHz = (1/ips_t0_wavelength(left_ips)-1/ips_t0_wavelength(right_ips))*299792458
     Q = wavelength_x / FWHMnm
 
     results = {'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
@@ -222,7 +223,7 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     FSRGHz = FSRGHz[FSRidx, range(len(FSRidx))]
     
     results.update({'FSR(nm)': (np.round(FSRnm, 3).tolist(), 'nm'),
-                    'FSR(GHz)': (np.round(FSRGHz, 3).tolist(), 'GHz')})
+                    'FSR(THz)': (np.round(FSRGHz, 3).tolist(), 'THz')})
     
     return (results,
             inspect.currentframe().f_code.co_name, 

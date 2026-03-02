@@ -4,7 +4,7 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
+db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase.db"
 
 #%%
 folder = '260129'
@@ -82,14 +82,13 @@ cage='cage18'
 measure_name='260129'
 # Quick-look plot to visually inspect the first SPCM trace in a session
 with DatabaseAPI(db_path) as db:
-    for data_id in [2295,2296,2297,2298,2299,2300]:
+    for data_id in [1489]:
         info = db.select_rawdata_by_data_id(data_id)
         filepath = Path(db_path).parent / info['file_path']
         head, data = read_spectrum_lite(filepath)
-        x = data[:, 0]
+        wavelength = data[:, 0]
         col = 3 if data.shape[1] == 5 else 2
-        y = data[:, col] - data[:, 1]
-        #res,_,_ = MRM_OMA_analysis(data_vh, data_v0, start=1310, end=1315)
-        plt.plot(x,y)
+        loss = data[:, col] - data[:, 1]
+        plt.plot(wavelength, loss)
     plt.show()
 # %%
