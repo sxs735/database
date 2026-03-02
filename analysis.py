@@ -35,7 +35,7 @@ def read_spectrum(path,start_idx=None,end_idx=None):
             if start_idx is None and '=== Min' in row:
                 start_idx = i
                 setting['mode'] = 'min/max'
-            elif start_idx is not None and '=== Average ER (TLS 0) ===' in row:
+            elif start_idx is None and '=== Average IL (TLS 0) ===' in row:
                 start_idx = i
                 setting['mode'] = 'average'
             elif end_idx is None and '=== Mueller Row 1 (TLS 0) ==='in row:
@@ -55,6 +55,7 @@ def read_spectrum(path,start_idx=None,end_idx=None):
             data = np.array(data, dtype=float)
             data[:,0] *= 1E9
         else:
+            print(path)
             raise ValueError("Don't support this file format")
     return setting, data
 
@@ -270,7 +271,7 @@ def MRM_SSRF_analysis(frequency,
     frequency_x2 = inter_point[between][0]
     bandwidth = frequency_x2 - reference_frequency
 
-    result = {'bandwidth': (bandwidth, 'GHz')}
+    result = {'bandwidth': (float(round(bandwidth, 3)), 'GHz')}
 
     return (result,
             inspect.currentframe().f_code.co_name,

@@ -545,6 +545,15 @@ class DatabaseAPI:
         rows = self.query(sql, (measure_name,))
         return [row["session_id"] for row in rows]
     
+    def select_measure_ids_by_measure_name(self, measure_name: str) -> List[int]:
+        """根據 measure_name 取得所有 measure_id。"""
+        sql = f"""SELECT measure_id
+                  FROM {self.TABLE_MEASUREMENTS}
+                  WHERE measure_name = ?
+                  ORDER BY measure_id"""
+        rows = self.query(sql, (measure_name,))
+        return [row["measure_id"] for row in rows]
+
     def select_session_ids_by_measure_name_and_dut(self,
                                                    measure_name: str,
                                                    wafer: Optional[str] = None,
@@ -834,12 +843,12 @@ class DatabaseAPI:
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_session(self, measure_id: int) -> int:
+    def delete_measure(self, measure_id: int) -> int:
         """
         刪除測量會話（會級聯刪除相關的所有數據）
         
         Args:
-            session_id: 會話 ID
+            measure_id: 測量 ID
             
         Returns:
             刪除的行數
@@ -1007,6 +1016,78 @@ class DatabaseAPI:
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
         return output_path
+
+    def backup_database(self,
+                        backup_path: Optional[Union[str, Path]] = None) -> Path:
+        """備份目前的 SQLite 檔案並回傳備份路徑。"""
+        created_connection = False
+        if self.conn is None:
+            self.connect()
+            created_connection = True
+
+        try:
+            source_path = Path(self.db_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = source_path.suffix or ".db"
+            default_name = f"{source_path.stem}_backup_{timestamp}{suffix}"
+
+            if backup_path is None:
+                destination = source_path.parent / 'backup' / default_name
+            else:
+                candidate = Path(backup_path)
+                if candidate.exists() and candidate.is_dir():
+                    destination = candidate / default_name
+                else:
+                    destination = candidate
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            with sqlite3.connect(destination) as backup_conn:
+                self.conn.backup(backup_conn)
+
+            return destination
+        finally:
+            if created_connection:
+                self.close()
+
+    def restore_database(self,
+                         backup_path: Optional[Union[str, Path]] = None,
+                         create_backup: bool = True) -> Optional[Path]:
+        """以備份檔覆蓋目前資料庫；未提供路徑時自動使用最新備份。"""
+        if backup_path is None:
+            backup_dir = Path(self.db_path).parent / 'backup'
+            if not backup_dir.exists() or not backup_dir.is_dir():
+                raise FileNotFoundError("找不到備份資料夾，也無法推斷備份檔案。")
+            try:
+                backup_path = max(backup_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+            except ValueError as exc:
+                raise FileNotFoundError("備份資料夾為空，無可用備份檔案。") from exc
+
+        backup_path = Path(backup_path)
+        if not backup_path.exists() or not backup_path.is_file():
+            raise FileNotFoundError(f"找不到備份檔案: {backup_path}")
+
+        current_db = Path(self.db_path)
+        was_connected = self.conn is not None
+
+        if was_connected:
+            self.close()
+
+        safety_backup: Optional[Path] = None
+        if create_backup and current_db.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = current_db.suffix or ".db"
+            safety_backup = current_db.with_name(f"{current_db.stem}_pre_restore_{timestamp}{suffix}")
+            safety_backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(current_db, safety_backup)
+
+        current_db.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup_path, current_db)
+
+        if was_connected:
+            self.connect()
+
+        return safety_backup
 
     @classmethod
     def parse_filename(cls, filename: str) -> Dict[str, Any]:
@@ -1240,7 +1321,7 @@ class DatabaseAPI:
                 #         unit="file"))
                 list(tqdm(executor.map(self.copy_file, move_path), 
                         total=len(move_path), 
-                        desc="Moving", 
+                        desc="copying", 
                         unit="file"))
         except Exception:
             if self.conn:
@@ -1357,4 +1438,28 @@ class DatabaseAPI:
             self.insert_sources(analysis_id, dciv_info["data_id"], commit=commit)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='Tuning parameters', feature_idx=0, commit=commit)
             result = {key:(result[key][0],result[key][1]) for key in result}
+            self.insert_metrics(feature_id, result, commit=commit)
+
+    def MRM_SSRF_analysis_by_session(self,session_id,commit=True):
+        ssrf_info = self.select_data_ids_paths_by_session(session_id, data_type='SSRF')
+        input_powers = []
+        for data in ssrf_info:
+            input_powers += [float(self.select_optical_info_by_data_id(data['data_id'])['input_power']
+                                   .replace(' dBm', ''))]
+        sorted_index = np.argsort(input_powers)
+        for no,idx in enumerate(sorted_index):
+            ssrf_data = read_ssrf(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
+            frequency = np.real(ssrf_data[:,0])
+            s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
+            result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21)
+            
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                               analysis_type = 'MRM_SSRF_analysis',
+                                               instance_no = no,
+                                               algorithm = algorithm_name,
+                                               version = version,
+                                               commit=commit)
+            self.insert_sources(analysis_id, ssrf_info[idx]["data_id"], commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=0, commit=commit)
+            #result = {key:(result[key][0],result[key][1]) for key in result}
             self.insert_metrics(feature_id, result, commit=commit)
