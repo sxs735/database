@@ -4,7 +4,7 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
+db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase 2.db"
 
 #%%
 folder = '260212_mapping'
@@ -24,8 +24,7 @@ print(f"Processing cage: {cage}, measure_name: {measure_name}")
 with DatabaseAPI(db_path) as db:
     session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
     for session_id in tqdm(session_ids, desc="Sessions"):
-        db._MRM_SPCM_analysis_by_session(session_id,commit=False)
-        #db.MRM_SPCM_analysis_by_session(session_id,commit=False)
+        db.MRM_SPCM_analysis_by_session(session_id,commit=False)
     db.conn.commit()
 #%%
 print("Starting MRM OMA analysis...")
