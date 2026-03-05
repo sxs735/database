@@ -140,7 +140,7 @@ def read_dcvi(path):
                 'measured current': (tofloat(data[4]), 'A')}
         return data
 
-def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order=3):
+def MRM_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order=3):
     """
     MRM SPCM 頻譜分析函數
     
@@ -192,10 +192,10 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=2, distance=5, baseline_order
     # 計算 FWHM 和 Q factor
     Ty = 10 ** (loss_level / 10)
     wavelength_spacing = np.median(np.diff(wavelength))
-    ips_t0_wavelength = lambda x: wavelength_spacing*x + wavelength[0]
+    ips_to_wavelength = lambda x: wavelength_spacing*x + wavelength[0]
     widths, _, left_ips, right_ips = peak_widths(-Ty, valley_idx, rel_height=0.5)
     FWHMnm = widths * wavelength_spacing
-    FWHMGHz = (1/ips_t0_wavelength(left_ips)-1/ips_t0_wavelength(right_ips))*299792458
+    FWHMGHz = (1/ips_to_wavelength(left_ips)-1/ips_to_wavelength(right_ips))*299792458
     Q = wavelength_x / FWHMnm
 
     results = {'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
@@ -269,10 +269,11 @@ def MRM_SSRF_analysis(frequency,
 
     between = ((smooth_s21[:-1]-(ref_loss-drop_levels))*(smooth_s21[1:]-(ref_loss-drop_levels))<=0) & (smooth_s21[:-1] != smooth_s21[1:])
     inter_point = frequency[:-1] + ((ref_loss-drop_levels) - smooth_s21[:-1]) * (frequency[1:] - frequency[:-1]) / (smooth_s21[1:] - smooth_s21[:-1])
-    frequency_x2 = inter_point[between][0]
+    inter_x = inter_point[between]
+    frequency_x2 = np.min(inter_x[(inter_x - reference_frequency)>0])
     bandwidth = frequency_x2 - reference_frequency
 
-    result = {'bandwidth': (float(round(bandwidth, 3)), 'GHz')}
+    result = {'Bandwidth': (float(round(bandwidth, 3)), 'GHz')}
 
     return (result,
             inspect.currentframe().f_code.co_name,

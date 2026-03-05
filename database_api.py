@@ -681,7 +681,7 @@ class DatabaseAPI:
         return {item['info_key']: (self._coerce_db_value(item['info_value']), item['info_unit']) for item in info}
     
     # Analyses 查詢
-    def select_analyses_by_session_id(self,
+    def select_analyses_by_measure_id(self,
                                       measure_id: int,
                                       analysis_type: Optional[str] = None,
                                       session_idx: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -812,7 +812,7 @@ class DatabaseAPI:
             data['another_info'] = self.select_another_info_dict_by_data_id(data['data_id'])
         
         # 分析執行
-        analysis_runs = self.select_analyses_by_session_id(measure_id)
+        analysis_runs = self.select_analyses_by_measure_id(measure_id)
         for analysis in analysis_runs:
             analysis['inputs'] = self.select_sourcesinfo_by_analysis_id(analysis['analysis_id'])
             # 每個分析的特徵
@@ -899,10 +899,11 @@ class DatabaseAPI:
         self.conn.commit()
         return cursor.rowcount
     
-    def delete_analyses(self, analysis_id: int) -> int:
+    def delete_analyses(self, analysis_id: int, commit: bool = True) -> int:
         """刪除分析執行（會級聯刪除相關特徵和特徵值）"""
         cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ANALYSES} WHERE analysis_id = ?", (analysis_id,))
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cursor.rowcount
 
     def delete_sources(self, analysis_id: int, data_id: int) -> int:
@@ -924,6 +925,63 @@ class DatabaseAPI:
         self.conn.commit()
         return cursor.rowcount
     
+    def vacuum(self,
+               into_path: Optional[Union[str, Path]] = None,
+               checkpoint: Optional[str] = "TRUNCATE",
+               optimize: bool = True,
+               incremental_pages: Optional[int] = None) -> Optional[Path]:
+        """壓縮資料庫檔案並清理 WAL，支援 VACUUM INTO 與 incremental vacuum。
+
+        Args:
+            into_path: 若提供則使用 `VACUUM INTO` 產生新的壓縮檔案。
+                       目錄會自動建立，並覆寫既有檔案。
+            checkpoint: 在 VACUUM 前執行的 WAL checkpoint 模式，可為
+                        PASSIVE/FULL/RESTART/TRUNCATE。設定為 None 可跳過。
+            optimize:  若為 True，於完成後執行 `PRAGMA optimize`。
+            incremental_pages: 指定 `PRAGMA incremental_vacuum(n)` 的頁數，
+                               僅在 auto_vacuum = incremental 時有效。
+
+        Returns:
+            into_path 轉換為 Path（使用 VACUUM INTO 時）或 None。
+        """
+        if self.conn is None:
+            self.connect()
+            close_after = True
+        else:
+            close_after = False
+
+        try:
+            self.conn.commit()  # sqlite 要求 VACUUM 在 auto-commit 模式下執行
+
+            if checkpoint:
+                mode = checkpoint.upper()
+                valid_modes = {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}
+                if mode not in valid_modes:
+                    raise ValueError(f"Unsupported checkpoint mode: {checkpoint}")
+                self.conn.execute(f"PRAGMA wal_checkpoint({mode})")
+
+            if incremental_pages is not None:
+                if incremental_pages < 0:
+                    raise ValueError("incremental_pages must be non-negative")
+                self.conn.execute(f"PRAGMA incremental_vacuum({int(incremental_pages)})")
+
+            target_path: Optional[Path] = None
+            if into_path:
+                target_path = Path(into_path)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                self.conn.execute("VACUUM INTO ?", (str(target_path),))
+            else:
+                self.conn.execute("VACUUM")
+
+            if optimize:
+                self.conn.execute("PRAGMA optimize")
+
+            self.conn.commit()
+            return target_path
+        finally:
+            if close_after:
+                self.close()
+        
     # 批量刪除
     def delete_sessions_by_dut(self, dut_id: int) -> int:
         """刪除特定 DUT 的所有會話"""
@@ -1350,7 +1408,7 @@ class DatabaseAPI:
                 result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
                 self.insert_metrics(feature_id, result_idx, commit=commit)
 
-    def MRM_OMA_analysis_by_session(self,session_id,commit=True):
+    def MRM_OMA_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
         spcm_info = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
         modulated_spcm = {}
         for data in spcm_info:
@@ -1371,7 +1429,7 @@ class DatabaseAPI:
         _,modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / max_modulated_path)
         _,non_modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / non_modulated_path)
         result, algorithm_name, version = MRM_OMA_analysis(modulated_spcm, 
-                                                            non_modulated_spcm, start=1310, end=1315)
+                                                            non_modulated_spcm, start=start, end=end)
         
         delta_modulated_voltage = abs(modulated_voltage[max_modulated_idx] - modulated_voltage[non_modulated_idx])
         modulated_efficiency = (result['Delta Wavelength'][0]/delta_modulated_voltage)
@@ -1389,7 +1447,7 @@ class DatabaseAPI:
         result = {key:(result[key][0],result[key][1]) for key in result}
         self.insert_metrics(feature_id, result, commit=commit)
 
-    def MRM_tuning_analysis_by_session(self,session_id,commit=True):
+    def MRM_tuning_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
         spcm_info = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
         dciv_info = self.select_data_ids_paths_by_session(session_id, data_type='DCIV')
         
@@ -1423,7 +1481,7 @@ class DatabaseAPI:
             dciv_info = dciv[voltage]
             _,modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / modulated_path)
             result, algorithm_name, version = MRM_tuning_analysis(modulated_spcm, 
-                                                                non_modulated_spcm, start=1310, end=1315)
+                                                                non_modulated_spcm, start=start, end=end)
             result['Tuning Efficiency'] = (round(result['Delta Frequency'][0]/dciv_info['power'],3), 'GHz/mW')
             result['Heater resistance'] = (round(dciv_info['resistance'], 3), 'Ohm')
         
@@ -1451,7 +1509,7 @@ class DatabaseAPI:
             ssrf_data = read_ssrf(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
             frequency = np.real(ssrf_data[:,0])
             s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
-            result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21)
+            result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
             
             analysis_id = self.insert_analysis(session_id = session_id,
                                                analysis_type = 'MRM_SSRF_analysis',

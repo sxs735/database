@@ -4,10 +4,10 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase.db"
+db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
 
 #%%
-folder = '260129'
+folder = '260212_mapping'
 # Optional batch import step for freshly measured folders
 with DatabaseAPI(db_path) as db:
     db.backup_database()
@@ -16,15 +16,16 @@ with DatabaseAPI(db_path) as db:
     db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
     #db.restore_database(create_backup=False)
 #%%
-cage = 'cage158'
-measure_name = '260122_3'
+cage = 'cage18'
+measure_name = '260129'
 #%%
 print("Starting batch MRM_SPCM analysis...")
 print(f"Processing cage: {cage}, measure_name: {measure_name}")
 with DatabaseAPI(db_path) as db:
     session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
     for session_id in tqdm(session_ids, desc="Sessions"):
-        db.MRM_SPCM_analysis_by_session(session_id,commit=False)
+        db._MRM_SPCM_analysis_by_session(session_id,commit=False)
+        #db.MRM_SPCM_analysis_by_session(session_id,commit=False)
     db.conn.commit()
 #%%
 print("Starting MRM OMA analysis...")
@@ -32,7 +33,7 @@ print(f"Processing cage: {cage}, measure_name: {measure_name}")
 with DatabaseAPI(db_path) as db:
     session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
     for session_id in tqdm(session_ids, desc="Sessions"):
-        db.MRM_OMA_analysis_by_session(session_id,commit=False)
+        db.MRM_OMA_analysis_by_session(session_id,start=1305, end=1315,commit=False)
     db.conn.commit()
 
 #%%
@@ -41,7 +42,7 @@ print(f"Processing cage: {cage}, measure_name: {measure_name}")
 with DatabaseAPI(db_path) as db:
     session_ids = db.select_session_ids_by_measure_name_and_dut(measure_name = measure_name, cage = cage)
     for session_id in tqdm(session_ids, desc="Sessions"):
-        db.MRM_tuning_analysis_by_session(session_id, commit=False)
+        db.MRM_tuning_analysis_by_session(session_id,start=1305, end=1315, commit=False)
     db.conn.commit()
 #%%
 print("Starting MRM SSRF analysis...")
@@ -51,7 +52,18 @@ with DatabaseAPI(db_path) as db:
     for session_id in tqdm(session_ids, desc="Sessions"):
         db.MRM_SSRF_analysis_by_session(session_id,commit=False)
     db.conn.commit()
+#%%
+with DatabaseAPI(db_path) as db:
+    measure_ids = db.select_measure_ids_by_measure_name(measure_name = '260206_mapping')
+    for measure_id in measure_ids:
+        analysis_ids = [analysis['analysis_id'] for analysis in db.select_analyses_by_measure_id(measure_id)]
+        for analysis_id in analysis_ids:
+            db.delete_analyses(analysis_id, commit=False)
+    db.conn.commit()
 
+#%%
+with DatabaseAPI(db_path) as db:
+    db.vacuum()
 #%%  
 # Alternate query example: exclude WDM devices to inspect combinations quickly
 with DatabaseAPI(db_path) as db:  
@@ -75,20 +87,5 @@ import sqlite3
 # Quick integrity check to ensure the SQLite file is healthy
 conn = sqlite3.connect(db_path)
 print(conn.execute("PRAGMA integrity_check;").fetchone())
-# %%
-#%matplotlib qt
-import matplotlib.pyplot as plt
-cage='cage18'
-measure_name='260129'
-# Quick-look plot to visually inspect the first SPCM trace in a session
-with DatabaseAPI(db_path) as db:
-    for data_id in [1489]:
-        info = db.select_rawdata_by_data_id(data_id)
-        filepath = Path(db_path).parent / info['file_path']
-        head, data = read_spectrum_lite(filepath)
-        wavelength = data[:, 0]
-        col = 3 if data.shape[1] == 5 else 2
-        loss = data[:, col] - data[:, 1]
-        plt.plot(wavelength, loss)
-    plt.show()
+
 # %%
