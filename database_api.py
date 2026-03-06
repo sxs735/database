@@ -1395,7 +1395,7 @@ class DatabaseAPI:
             x = data[:, 0]
             col = 3 if data.shape[1] == 5 else 2
             y = data[:, col] - data[:, 1]
-            result, algorithm_name, version = MRM_SPCM_analysis(x, y)
+            result, algorithm_name, version = MRM_SPCM_analysis(x, y,prominence=2.5)
             analysis_id = self.insert_analysis(session_id = session_id,
                                                analysis_type = 'MRM_SPCM_analysis',
                                                instance_no = instance_no,

@@ -4,10 +4,11 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase 2.db"
+db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
+#db_path = Path(r"R:\KF處理\SQLite") / "DataBase.db"
 
 #%%
-folder = '260212_mapping'
+folder = '260305_MTK_MRM'
 # Optional batch import step for freshly measured folders
 with DatabaseAPI(db_path) as db:
     db.backup_database()
@@ -16,8 +17,8 @@ with DatabaseAPI(db_path) as db:
     db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
     #db.restore_database(create_backup=False)
 #%%
-cage = 'cage18'
-measure_name = '260129'
+cage = 'cage36'
+measure_name = '260305_MTK_MRM'
 #%%
 print("Starting batch MRM_SPCM analysis...")
 print(f"Processing cage: {cage}, measure_name: {measure_name}")
