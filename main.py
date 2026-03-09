@@ -52,40 +52,8 @@ with DatabaseAPI(db_path) as db:
     for session_id in tqdm(session_ids, desc="Sessions"):
         db.MRM_SSRF_analysis_by_session(session_id,commit=False)
     db.conn.commit()
-#%%
-with DatabaseAPI(db_path) as db:
-    measure_ids = db.select_measure_ids_by_measure_name(measure_name = '260206_mapping')
-    for measure_id in measure_ids:
-        analysis_ids = [analysis['analysis_id'] for analysis in db.select_analyses_by_measure_id(measure_id)]
-        for analysis_id in analysis_ids:
-            db.delete_analyses(analysis_id, commit=False)
-    db.conn.commit()
 
-#%%
-with DatabaseAPI(db_path) as db:
-    db.vacuum()
-#%%  
-# Alternate query example: exclude WDM devices to inspect combinations quickly
-with DatabaseAPI(db_path) as db:  
-    cmd = '''SELECT DISTINCT d.cage,m.measure_name
-             FROM DUT d
-             JOIN Measurement m ON d.DUT_id = m.DUT_id
-             WHERE d.device <> 'WDM'
-             ORDER BY d.cage, m.measure_name;'''
-    output = db.query(cmd)
 #%%
 # Export a full database snapshot for sharing/reporting
 with DatabaseAPI(db_path) as db:
     output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")   
-# %%
-# Manual transaction control helper (when a previous block fails mid-way)
-with DatabaseAPI(db_path) as db:
-    db.conn.rollback()
-# %%
-import sqlite3
-
-# Quick integrity check to ensure the SQLite file is healthy
-conn = sqlite3.connect(db_path)
-print(conn.execute("PRAGMA integrity_check;").fetchone())
-
-# %%

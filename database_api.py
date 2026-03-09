@@ -33,7 +33,6 @@ class DatabaseAPI:
                               _(?P<doe>[^_]+)
                               _(?P<cage>[^_]+)
                               _die(?P<die>\d+)
-                              _(?P<subdie>\d+)
                               _(?P<temperature>-?\d+)C
                               _\#(?P<repeat>\d+)
                               _(?P<device>[^_]+)
@@ -509,51 +508,13 @@ class DatabaseAPI:
         results = self.query("SELECT * FROM DUT WHERE DUT_id = ?", (dut_id,))
         return results[0] if results else None
     
-    def select_list_duts(self, wafer: Optional[str] = None, die: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        查詢 DUT
-        
-        Args:
-            wafer: 晶圓編號（可選）
-            die: 晶粒編號（可選）
-        """
-        sql = "SELECT * FROM DUT WHERE 1=1"
-        params = []
-        
-        if wafer:
-            sql += " AND wafer = ?"
-            params.append(wafer)
-        if die is not None:
-            sql += " AND die = ?"
-            params.append(die)
-            
-        return self.query(sql, tuple(params))
-    
     # Measurement 查詢
     def select_session_by_id(self, measure_id: int) -> Optional[Dict[str, Any]]:
         """根據 Measurement ID 查詢測量會話"""
         results = self.query(f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE measure_id = ?", (measure_id,))
         return results[0] if results else None
     
-    def select_session_ids_by_measure_name(self, measure_name: str) -> List[int]:
-        """根據 measure_name 取得所有 session_id（依 session_idx 排序）。"""
-        sql = f"""SELECT ms.session_id
-                  FROM {self.TABLE_MEASURE_SESSIONS} ms
-                  JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
-                  WHERE m.measure_name = ?
-                  ORDER BY ms.session_idx"""
-        rows = self.query(sql, (measure_name,))
-        return [row["session_id"] for row in rows]
-    
-    def select_measure_ids_by_measure_name(self, measure_name: str) -> List[int]:
-        """根據 measure_name 取得所有 measure_id。"""
-        sql = f"""SELECT measure_id
-                  FROM {self.TABLE_MEASUREMENTS}
-                  WHERE measure_name = ?
-                  ORDER BY measure_id"""
-        rows = self.query(sql, (measure_name,))
-        return [row["measure_id"] for row in rows]
-
+    #select_session_ids_by_measure_name_and_dut
     def select_session_ids_by_measure_name_and_dut(self,
                                                    measure_name: str,
                                                    wafer: Optional[str] = None,
@@ -590,25 +551,10 @@ class DatabaseAPI:
         rows = self.query(sql, tuple(params))
         return [row["session_id"] for row in rows]
 
-    def select_sessions_by_dut_id(self, dut_id: int) -> List[Dict[str, Any]]:
-        """查詢特定 DUT 的所有測量會話"""
-        return self.query(f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE DUT_id = ? ORDER BY measured_at DESC",(dut_id,))
-    
-    def select_sessions_by_date_range(self,start_date: datetime,end_date: datetime) -> List[Dict[str, Any]]:
-        """查詢日期範圍內的測量會話"""
-        return self.query(f"""SELECT * FROM {self.TABLE_MEASUREMENTS} 
-                          WHERE measured_at BETWEEN ? AND ? ORDER BY measured_at DESC""",
-                          (start_date, end_date))
-    
     # Conditions 查詢
-    def select_conditions_by_session_id(self, measure_id: int) -> List[Dict[str, Any]]:
+    def select_conditions_by_measure_id(self, measure_id: int) -> List[Dict[str, Any]]:
         """查詢特定會話的所有實驗條件"""
         return self.query(f"SELECT * FROM {self.TABLE_CONDITIONS} WHERE measure_id = ?",(measure_id,))
-    
-    def select_conditions_dict_by_session_id(self, measure_id: int) -> Dict[str, Tuple[Any, Optional[str]]]:
-        """以字典形式返回實驗條件（包含單位）"""
-        conditions = self.select_conditions_by_session_id(measure_id)
-        return {cond['setting_parameters']: (self._coerce_db_value(cond['setting_value']), cond['parameters_unit']) for cond in conditions}
     
     # RawDataFiles 查詢
     def select_rawdata_by_session_id(self,
@@ -632,6 +578,7 @@ class DatabaseAPI:
         sql += " ORDER BY ms.session_idx, md.data_id"
         return self.query(sql, tuple(params))
 
+    #select_data_ids_paths_by_session
     def select_data_ids_paths_by_session(self, session_id: int, data_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """查詢指定 session_id (可選 data_type) 的 data_id 與 file_path。"""
         sql = f"""SELECT data_id, file_path
@@ -665,264 +612,38 @@ class DatabaseAPI:
     def select_electric_info_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
         """取得單筆數據的電性設定（每個 channel 一行）。"""
         return self.query(f"SELECT * FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ? ORDER BY channel", (data_id,))
-
-    def select_electric_info_dict_by_data_id(self, data_id: int) -> Dict[str, Dict[str, Any]]:
-        """以字典形式返回電性設定，鍵為 channel。"""
-        rows = self.select_electric_info_by_data_id(data_id)
-        return {row['channel']: {'element': row['element'], 'set_mode': row['set_mode'], 'set_value': row['set_value']} for row in rows}
-
+    
     def select_another_info_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
         """查詢自由格式的其它資訊。"""
         return self.query(f"SELECT * FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?", (data_id,))
 
-    def select_another_info_dict_by_data_id(self, data_id: int) -> Dict[str, Tuple[Any, Optional[str]]]:
-        """以字典形式返回其它資訊（包含單位）。"""
-        info = self.select_another_info_by_data_id(data_id)
-        return {item['info_key']: (self._coerce_db_value(item['info_value']), item['info_unit']) for item in info}
-    
     # Analyses 查詢
-    def select_analyses_by_measure_id(self,
-                                      measure_id: int,
-                                      analysis_type: Optional[str] = None,
-                                      session_idx: Optional[int] = None) -> List[Dict[str, Any]]:
-        """查詢特定 Measurement (可選 session_idx) 的分析執行"""
-        sql = f"""SELECT a.*, ms.measure_id, ms.session_idx
-                  FROM {self.TABLE_ANALYSES} a
-                  JOIN {self.TABLE_MEASURE_SESSIONS} ms ON a.session_id = ms.session_id
-                  WHERE ms.measure_id = ?"""
-        params: List[Any] = [measure_id]
-
-        if session_idx is not None:
-            sql += " AND ms.session_idx = ?"
-            params.append(session_idx)
-        if analysis_type:
-            sql += " AND a.analysis_type = ?"
-            params.append(analysis_type)
-
-        sql += " ORDER BY ms.session_idx, a.analysis_id"
-        return self.query(sql, tuple(params))
-
     # AnalysisSources 查詢
-    def select_sources_by_analysis_id(self, analysis_id: int) -> List[Dict[str, Any]]:
-        """查詢分析所對應的測量數據 ID"""
-        return self.query(f"SELECT * FROM {self.TABLE_ANALYSIS_SOURCES} WHERE analysis_id = ?",
-                          (analysis_id,))
-
-    def select_sourcesinfo_by_analysis_id(self, analysis_id: int) -> List[Dict[str, Any]]:
-        """查詢分析所對應的完整測量數據紀錄"""
-        sql = f"""SELECT md.*, ms.measure_id, ms.session_idx
-                 FROM {self.TABLE_ANALYSIS_SOURCES} ai
-                 JOIN {self.TABLE_DATA} md ON ai.data_id = md.data_id
-                 JOIN {self.TABLE_MEASURE_SESSIONS} ms ON md.session_id = ms.session_id
-                 WHERE ai.analysis_id = ?
-                 ORDER BY md.data_id"""
-        return self.query(sql, (analysis_id,))
-
-    def select_analyses_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
-        """查詢某筆測量數據被哪些分析使用"""
-        sql = f"""SELECT ar.*, ms.measure_id, ms.session_idx
-                  FROM {self.TABLE_ANALYSIS_SOURCES} ai
-                  JOIN {self.TABLE_ANALYSES} ar ON ai.analysis_id = ar.analysis_id
-                  JOIN {self.TABLE_MEASURE_SESSIONS} ms ON ar.session_id = ms.session_id
-                  WHERE ai.data_id = ?
-                  ORDER BY ar.analysis_id"""
-        return self.query(sql, (data_id,))
-    
     # Features 查詢
-    def select_features_by_analysis_id(self,analysis_id: int,feature_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """查詢特定分析的特徵"""
-        if feature_type:
-            return self.query(f"SELECT * FROM {self.TABLE_FEATURES} WHERE analysis_id = ? AND feature_type = ? ORDER BY feature_idx",
-                              (analysis_id, feature_type))
-        else:
-            return self.query(f"SELECT * FROM {self.TABLE_FEATURES} WHERE analysis_id = ? ORDER BY feature_idx",
-                              (analysis_id,))
-    
     # FeatureMetrics 查詢
-    def select_metrics_by_feature_id(self, feature_id: int) -> List[Dict[str, Any]]:
-        """查詢特定特徵的所有值"""
-        return self.query(f"SELECT * FROM {self.TABLE_METRICS} WHERE feature_id = ?",(feature_id,))
-    
-    def select_metrics_dict_by_feature_id(self, feature_id: int) -> Dict[str, Tuple[float, Optional[str]]]:
-        """以字典形式返回特徵值"""
-        values = self.select_metrics_by_feature_id(feature_id)
-        return {val['metric_key']: (val['metric_value'], val['metric_unit']) for val in values}
-    
-    def select_metrics_by_value_range(self,
-                                      key: str,
-                                      min_value: Optional[float] = None,
-                                      max_value: Optional[float] = None,
-                                      unit: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        根據特徵值範圍搜索
-        
-        Args:
-            key: 特徵名稱（如 'wavelength'）
-            min_value: 最小值（可選）
-            max_value: 最大值（可選）
-            unit: 單位（可選）
-        """
-        sql = f"""SELECT metric_id,
-                  feature_id,
-                  metric_key,
-                  metric_value,
-                  metric_unit,
-                  metric_value AS value,
-                  metric_unit AS unit
-                  FROM {self.TABLE_METRICS}
-                  WHERE metric_key = ?"""
-        params = [key]
-        
-        if unit is not None:
-            sql += " AND metric_unit = ?"
-            params.append(unit)
-        if min_value is not None:
-            sql += " AND metric_value >= ?"
-            params.append(min_value)
-        if max_value is not None:
-            sql += " AND metric_value <= ?"
-            params.append(max_value)
-            
-        return self.query(sql, tuple(params))
-    
-    # 複雜查詢：完整的測量會話資訊
-    def select_session_details(self, measure_id: int) -> Dict[str, Any]:
-        """
-        獲取測量會話的完整資訊（包括 DUT、條件、數據等）
-        
-        Returns:
-            包含所有相關信息的字典
-        """
-        # 基本會話信息
-        session = self.select_session_by_id(measure_id)
-        if not session:
-            return {}
-        
-        # DUT 信息
-        session['dut'] = self.select_dut_by_id(session['DUT_id'])
-        
-        # 實驗條件
-        session['conditions'] = self.select_conditions_dict_by_session_id(measure_id)
-        
-        # 測量數據
-        session['measurement_data'] = self.select_rawdata_by_session_id(measure_id)
-        for data in session['measurement_data']:
-            data['optical_info'] = self.select_optical_info_by_data_id(data['data_id'])
-            data['electric_info'] = self.select_electric_info_by_data_id(data['data_id'])
-            data['another_info'] = self.select_another_info_dict_by_data_id(data['data_id'])
-        
-        # 分析執行
-        analysis_runs = self.select_analyses_by_measure_id(measure_id)
-        for analysis in analysis_runs:
-            analysis['inputs'] = self.select_sourcesinfo_by_analysis_id(analysis['analysis_id'])
-            # 每個分析的特徵
-            features = self.select_features_by_analysis_id(analysis['analysis_id'])
-            for feature in features:
-                # 每個特徵的值
-                feature['values'] = self.select_metrics_dict_by_feature_id(feature['feature_id'])
-            analysis['features'] = features
-        session['analysis_runs'] = analysis_runs
-        
-        return session
-    
+
     # =========================
     # 4. 刪除資料 (DELETE)
     # =========================
     
-    def delete_dut(self, dut_id: int) -> int:
-        """
-        刪除 DUT（會級聯刪除相關的所有數據）
+    def delete_record(self, table: str, record_id: int, commit: bool = True) -> int:
+        TABLE_ID_MAP = {self.TABLE_DUT: "DUT_id",
+                        self.TABLE_MEASUREMENTS: "measure_id",
+                        self.TABLE_CONDITIONS: "condition_id",
+                        self.TABLE_DATA: "data_id",
+                        self.TABLE_OPTICAL_INFO: "data_id",
+                        self.TABLE_ELECTRIC_INFO: "data_id",
+                        self.TABLE_ANOTHER_INFO: "data_id",
+                        self.TABLE_ANALYSES: "analysis_id",
+                        self.TABLE_ANALYSIS_SOURCES: "analysis_id",
+                        self.TABLE_FEATURES: "feature_id",
+                        self.TABLE_METRICS: "metric_id"}
         
-        Args:
-            dut_id: DUT ID
-            
-        Returns:
-            刪除的行數
-        """
-        cursor = self.conn.execute("DELETE FROM DUT WHERE DUT_id = ?", (dut_id,))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_measure(self, measure_id: int) -> int:
-        """
-        刪除測量會話（會級聯刪除相關的所有數據）
-        
-        Args:
-            measure_id: 測量 ID
-            
-        Returns:
-            刪除的行數
-        """
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_MEASUREMENTS} WHERE measure_id = ?", (measure_id,))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_condition(self, condition_id: int) -> int:
-        """刪除實驗條件"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_CONDITIONS} WHERE condition_id = ?", (condition_id,))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_rawdata(self, data_id: int) -> int:
-        """刪除測量數據"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_DATA} WHERE data_id = ?", (data_id,))
-        self.conn.commit()
-        return cursor.rowcount
-
-    def delete_optical_info(self, data_id: int) -> int:
-        """刪除光學設定"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_OPTICAL_INFO} WHERE data_id = ?", (data_id,))
-        self.conn.commit()
-        return cursor.rowcount
-
-    def delete_electric_info(self, data_id: int, channel: Optional[str] = None) -> int:
-        """刪除電性設定（可選擇性僅刪除某 channel）。"""
-        if channel is None:
-            cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ?", (data_id,))
-        else:
-            cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ? AND channel = ?",
-                                       (data_id, channel))
-        self.conn.commit()
-        return cursor.rowcount
-
-    def delete_another_info(self, data_id: int, info_key: Optional[str] = None, info_unit: Optional[str] = None) -> int:
-        """刪除其他資訊，可依 key/unit 篩選。"""
-        sql = f"DELETE FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?"
-        params: List[Any] = [data_id]
-        if info_key is not None:
-            sql += " AND info_key = ?"
-            params.append(info_key)
-        if info_unit is not None:
-            sql += " AND info_unit = ?"
-            params.append(info_unit)
-        cursor = self.conn.execute(sql, tuple(params))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_analyses(self, analysis_id: int, commit: bool = True) -> int:
-        """刪除分析執行（會級聯刪除相關特徵和特徵值）"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ANALYSES} WHERE analysis_id = ?", (analysis_id,))
+        id_column = TABLE_ID_MAP[table]
+        query = f"DELETE FROM {table} WHERE {id_column} = ?"
+        cursor = self.conn.execute(query, (record_id,))
         if commit:
             self.conn.commit()
-        return cursor.rowcount
-
-    def delete_sources(self, analysis_id: int, data_id: int) -> int:
-        """刪除分析與測量數據的對應"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_ANALYSIS_SOURCES} WHERE analysis_id = ? AND data_id = ?",
-                                   (analysis_id, data_id))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_feature(self, feature_id: int) -> int:
-        """刪除分析特徵（會級聯刪除相關特徵值）"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_FEATURES} WHERE feature_id = ?", (feature_id,))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_metrics(self, metric_id: int) -> int:
-        """刪除特徵值"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_METRICS} WHERE metric_id = ?", (metric_id,))
-        self.conn.commit()
         return cursor.rowcount
     
     def vacuum(self,
@@ -981,46 +702,10 @@ class DatabaseAPI:
         finally:
             if close_after:
                 self.close()
-        
-    # 批量刪除
-    def delete_sessions_by_dut(self, dut_id: int) -> int:
-        """刪除特定 DUT 的所有會話"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_MEASUREMENTS} WHERE DUT_id = ?", (dut_id,))
-        self.conn.commit()
-        return cursor.rowcount
-    
-    def delete_old_sessions(self, before_date: datetime) -> int:
-        """刪除指定日期之前的所有會話"""
-        cursor = self.conn.execute(f"DELETE FROM {self.TABLE_MEASUREMENTS} WHERE measured_at < ?",
-                       (before_date,))
-        self.conn.commit()
-        return cursor.rowcount
     
     # =========================
     # 輔助方法
     # =========================
-    
-    def get_table_count(self, table_name: str) -> int:
-        """獲取表的記錄數"""
-        cursor = self.conn.execute(f"SELECT COUNT(*) as count FROM {table_name}")
-        return cursor.fetchone()['count']
-    
-    def get_database_stats(self) -> Dict[str, int]:
-        """獲取資料庫統計信息"""
-        tables = [self.TABLE_DUT, 
-                  self.TABLE_MEASUREMENTS, 
-                  self.TABLE_MEASURE_SESSIONS, 
-                  self.TABLE_CONDITIONS, 
-                  self.TABLE_DATA, 
-                  self.TABLE_OPTICAL_INFO,
-                  self.TABLE_ELECTRIC_INFO,
-                  self.TABLE_ANOTHER_INFO,
-                  self.TABLE_ANALYSES, 
-                  self.TABLE_ANALYSIS_SOURCES, 
-                  self.TABLE_FEATURES, 
-                  self.TABLE_METRICS]
-        return {table: self.get_table_count(table) for table in tables}
-
     def add_column(self,
                    table_name: str,
                    column_name: str,
