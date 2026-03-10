@@ -19,10 +19,8 @@ with DatabaseAPI(db_path) as db:
     db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
     #db.restore_database(create_backup=False)
 #%%
-cage = 'cage36'
-measure_name = '260305_MTK_MRM'
-#cage = 'Cage31'
-#measure_name = '260310_RF_test1'
+cage = 'Cage31'
+measure_name = '260310_RF_test1'
 #%%
 print("Starting batch MRM_SPCM analysis...")
 print(f"Processing cage: {cage}, measure_name: {measure_name}")
