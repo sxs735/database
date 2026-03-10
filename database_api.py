@@ -91,6 +91,16 @@ class DatabaseAPI:
         raise TypeError(f"Unsupported timestamp type: {type(value)!r}")
 
     @staticmethod
+    def _normalize_timestamp_for_query(value: Optional[Union[datetime, int, float, str]]) -> Optional[str]:
+        """將輸入轉換為 ISO 格式字串供 SQL 查詢使用，僅在提供值時處理。"""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        normalized = DatabaseAPI._normalize_timestamp(value)
+        return normalized.isoformat(sep=" ")
+
+    @staticmethod
     def _coerce_db_value(raw: Any) -> Any:
         """嘗試將 TEXT 欄位轉換回數字，否則維持原值"""
         if isinstance(raw, str):
@@ -502,33 +512,89 @@ class DatabaseAPI:
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
     
-    # DUT 查詢
-    def select_dut_by_id(self, dut_id: int) -> Optional[Dict[str, Any]]:
-        """根據 ID 查詢 DUT"""
-        results = self.query("SELECT * FROM DUT WHERE DUT_id = ?", (dut_id,))
-        return results[0] if results else None
-    
+    # DUT 查詢 
+    def select_duts(self,
+                    dut_id: Optional[int] = None,
+                    wafer: Optional[str] = None,
+                    doe: Optional[str] = None,
+                    die: Optional[int] = None,
+                    cage: Optional[str] = None,
+                    device: Optional[str] = None) -> List[Dict[str, Any]]:
+        """依條件篩選 DUT，參數為 None 時表示不套用該條件。"""
+        sql = f"SELECT * FROM {self.TABLE_DUT} WHERE 1=1"
+        params: List[Any] = []
+
+        if dut_id is not None:
+            sql += " AND DUT_id = ?"
+            params.append(dut_id)
+        if wafer is not None:
+            sql += " AND wafer = ?"
+            params.append(wafer)
+        if doe is not None:
+            sql += " AND DOE = ?"
+            params.append(doe)
+        if die is not None:
+            sql += " AND die = ?"
+            params.append(die)
+        if cage is not None:
+            sql += " AND cage = ?"
+            params.append(cage)
+        if device is not None:
+            sql += " AND device = ?"
+            params.append(device)
+
+        sql += " ORDER BY DUT_id"
+        return self.query(sql, tuple(params))
+
     # Measurement 查詢
-    def select_session_by_id(self, measure_id: int) -> Optional[Dict[str, Any]]:
-        """根據 Measurement ID 查詢測量會話"""
-        results = self.query(f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE measure_id = ?", (measure_id,))
-        return results[0] if results else None
-    
-    #select_session_ids_by_measure_name_and_dut
-    def select_session_ids_by_measure_name_and_dut(self,
-                                                   measure_name: str,
-                                                   wafer: Optional[str] = None,
-                                                   doe: Optional[str] = None,
-                                                   die: Optional[int] = None,
-                                                   cage: Optional[str] = None,
-                                                   device: Optional[str] = None) -> List[int]:
-        """根據 measure_name 以及可選的 DUT 條件取得 session_id 列表。"""
+    def select_measurements(self,
+                            dut_id: Optional[int] = None,
+                            measure_name: Optional[str] = None,
+                            measured_at_start: Optional[Union[datetime, int, float, str]] = None,
+                            measured_at_end: Optional[Union[datetime, int, float, str]] = None) -> List[Dict[str, Any]]:
+        """依 DUT、量測名稱與時間範圍篩選 Measurement。"""
+
+        sql = f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE 1=1"
+        params: List[Any] = []
+
+        if dut_id is not None:
+            sql += " AND DUT_id = ?"
+            params.append(dut_id)
+        if measure_name is not None:
+            sql += " AND measure_name = ?"
+            params.append(measure_name)
+
+        start_time = self._normalize_timestamp_for_query(measured_at_start)
+        end_time = self._normalize_timestamp_for_query(measured_at_end)
+
+        if start_time is not None:
+            sql += " AND measured_at >= ?"
+            params.append(start_time)
+        if end_time is not None:
+            sql += " AND measured_at <= ?"
+            params.append(end_time)
+
+        sql += " ORDER BY measured_at, measure_id"
+        return self.query(sql, tuple(params))
+
+    def select_session(self,
+                       wafer: Optional[str] = None,
+                       doe: Optional[str] = None,
+                       die: Optional[int] = None,
+                       cage: Optional[str] = None,
+                       device: Optional[str] = None,
+                       measure_name: Optional[str] = None,
+                       measured_at_start: Optional[Union[datetime, int, float, str]] = None,
+                       measured_at_stop: Optional[Union[datetime, int, float, str]] = None,
+                       session_idx: Optional[int] = None) -> List[int]:
+        """依 DUT、量測資訊與時間/序號條件取得 session_id 列表。"""
+
         sql = f"""SELECT ms.session_id
                   FROM {self.TABLE_MEASURE_SESSIONS} ms
                   JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
                   JOIN {self.TABLE_DUT} d ON m.DUT_id = d.DUT_id
-                  WHERE m.measure_name = ?"""
-        params: List[Any] = [measure_name]
+                  WHERE 1=1"""
+        params: List[Any] = []
 
         if wafer is not None:
             sql += " AND d.wafer = ?"
@@ -545,75 +611,98 @@ class DatabaseAPI:
         if device is not None:
             sql += " AND d.device = ?"
             params.append(device)
+        if measure_name is not None:
+            sql += " AND m.measure_name = ?"
+            params.append(measure_name)
 
-        sql += " ORDER BY ms.session_idx"
+        start_time = self._normalize_timestamp_for_query(measured_at_start)
+        stop_time = self._normalize_timestamp_for_query(measured_at_stop)
 
-        rows = self.query(sql, tuple(params))
-        return [row["session_id"] for row in rows]
+        if start_time is not None:
+            sql += " AND m.measured_at >= ?"
+            params.append(start_time)
+        if stop_time is not None:
+            sql += " AND m.measured_at <= ?"
+            params.append(stop_time)
+        if session_idx is not None:
+            sql += " AND ms.session_idx = ?"
+            params.append(session_idx)
+
+        sql += " ORDER BY ms.session_id, ms.session_idx"
+        return self.query(sql, tuple(params))
 
     # Conditions 查詢
-    def select_conditions_by_measure_id(self, measure_id: int) -> List[Dict[str, Any]]:
+    def select_conditions(self, measure_id: int) -> List[Dict[str, Any]]:
         """查詢特定會話的所有實驗條件"""
         return self.query(f"SELECT * FROM {self.TABLE_CONDITIONS} WHERE measure_id = ?",(measure_id,))
     
     # RawDataFiles 查詢
-    def select_rawdata_by_session_id(self,
-                                     measure_id: int,
-                                     data_type: Optional[str] = None,
-                                     session_idx: Optional[int] = None) -> List[Dict[str, Any]]:
-        """查詢特定 Measurement (可選 session_idx) 的測量數據"""
-        sql = f"""SELECT md.*, ms.measure_id, ms.session_idx
-                  FROM {self.TABLE_DATA} md
-                  JOIN {self.TABLE_MEASURE_SESSIONS} ms ON md.session_id = ms.session_id
-                  WHERE ms.measure_id = ?"""
-        params: List[Any] = [measure_id]
+    def select_rawdata_files(self,
+                             session_id: Optional[int] = None,
+                             data_type: Optional[str] = None,
+                             optical_input_channel: Optional[str] = None,
+                             optical_output_channel: Optional[str] = None,
+                             optical_input_power: Optional[str] = None,
+                             electric_element: Optional[str] = None,
+                             electric_channel: Optional[str] = None) -> List[Dict[str, Any]]:
+        """依照資料、光學與電性條件篩選 RawDataFiles。"""
 
-        if session_idx is not None:
-            sql += " AND ms.session_idx = ?"
-            params.append(session_idx)
-        if data_type:
-            sql += " AND md.data_type = ?"
+        sql = f"""SELECT rd.*,
+                           oi.input_channel AS optical_input_channel,
+                           oi.output_channel AS optical_output_channel,
+                           oi.input_power AS optical_input_power,
+                           GROUP_CONCAT(DISTINCT ei.element) AS electric_element,
+                           GROUP_CONCAT(DISTINCT ei.channel) AS electric_channel
+                    FROM {self.TABLE_DATA} rd
+                    LEFT JOIN {self.TABLE_OPTICAL_INFO} oi ON rd.data_id = oi.data_id
+                    LEFT JOIN {self.TABLE_ELECTRIC_INFO} ei ON rd.data_id = ei.data_id
+                    WHERE 1=1"""
+        params: List[Any] = []
+
+        if session_id is not None:
+            sql += " AND rd.session_id = ?"
+            params.append(session_id)
+        if data_type is not None:
+            sql += " AND rd.data_type = ?"
             params.append(data_type)
+        if optical_input_channel is not None:
+            sql += " AND oi.input_channel = ?"
+            params.append(optical_input_channel)
+        if optical_output_channel is not None:
+            sql += " AND oi.output_channel = ?"
+            params.append(optical_output_channel)
+        if optical_input_power is not None:
+            sql += " AND oi.input_power = ?"
+            params.append(optical_input_power)
+        if electric_element is not None:
+            sql += " AND ei.element = ?"
+            params.append(electric_element)
+        if electric_channel is not None:
+            sql += " AND ei.channel = ?"
+            params.append(electric_channel)
 
-        sql += " ORDER BY ms.session_idx, md.data_id"
-        return self.query(sql, tuple(params))
-
-    #select_data_ids_paths_by_session
-    def select_data_ids_paths_by_session(self, session_id: int, data_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """查詢指定 session_id (可選 data_type) 的 data_id 與 file_path。"""
-        sql = f"""SELECT data_id, file_path
-                  FROM {self.TABLE_DATA}
-                  WHERE session_id = ?"""
-        params: List[Any] = [session_id]
-
-        if data_type:
-            sql += " AND data_type = ?"
-            params.append(data_type)
-
-        sql += " ORDER BY data_id"
+        #sql += " ORDER BY rd.data_id"
+        sql += " GROUP BY rd.data_id ORDER BY rd.data_id"
         rows = self.query(sql, tuple(params))
+        for r in rows:
+            for f in ["electric_element", "electric_channel"]:
+                if r[f]:
+                    r[f] = r[f].split(",")
+                else:
+                    r[f] = []
         return rows
 
-    def select_rawdata_by_data_id(self, data_id: int) -> Optional[Dict[str, Any]]:
-        """根據 data_id 查詢單筆測量數據"""
-        sql = f"""SELECT md.*, ms.measure_id, ms.session_idx
-                  FROM {self.TABLE_DATA} md
-                  JOIN {self.TABLE_MEASURE_SESSIONS} ms ON md.session_id = ms.session_id
-                  WHERE md.data_id = ?"""
-        results = self.query(sql, (data_id,))
-        return results[0] if results else None
-
     # OpticalInfo / ElectricInfo 查詢
-    def select_optical_info_by_data_id(self, data_id: int) -> Optional[Dict[str, Any]]:
+    def select_optical(self, data_id: int) -> Optional[Dict[str, Any]]:
         """取得單筆數據的光學設定。"""
         rows = self.query(f"SELECT * FROM {self.TABLE_OPTICAL_INFO} WHERE data_id = ?", (data_id,))
         return rows[0] if rows else None
 
-    def select_electric_info_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
+    def select_electric(self, data_id: int) -> List[Dict[str, Any]]:
         """取得單筆數據的電性設定（每個 channel 一行）。"""
         return self.query(f"SELECT * FROM {self.TABLE_ELECTRIC_INFO} WHERE data_id = ? ORDER BY channel", (data_id,))
     
-    def select_another_info_by_data_id(self, data_id: int) -> List[Dict[str, Any]]:
+    def select_another(self, data_id: int) -> List[Dict[str, Any]]:
         """查詢自由格式的其它資訊。"""
         return self.query(f"SELECT * FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?", (data_id,))
 
@@ -1053,10 +1142,6 @@ class DatabaseAPI:
                 move_path.append((filepath, dst))
             self.conn.commit()
             # 交易完成後移動或複製檔案，避免 I/O 影響 DB 寫入
-            #for src, dst in tqdm(move_path, desc="Moving", unit="file"):
-                #shutil.move(str(src), str(dst))
-                #shutil.copy2(str(src), str(dst))
-            #多線程-移動或複製檔案至目標資料夾
             with ThreadPoolExecutor() as executor:
                 # list(tqdm(executor.map(self.move_file, move_path), 
                 #         total=len(move_path), 
@@ -1072,9 +1157,11 @@ class DatabaseAPI:
             raise
         print(f"匯入資料庫完成")
  
-    def MRM_SPCM_analysis_by_session(self,session_id,commit=True):
-        spcm_data = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
-        for instance_no, info in enumerate(spcm_data):
+    def MRM_SPCM_analysis_by_session(self,session_id,input_channel=None,output_channel=None,commit=True):
+        spcm_info = self.select_rawdata_files(session_id,data_type='SPCM',
+                                              optical_input_channel= input_channel,
+                                              optical_output_channel= output_channel)
+        for instance_no, info in enumerate(spcm_info):
             filepath = Path(self.db_path).parent / info['file_path']
             head, data = read_spectrum_lite(filepath)
             x = data[:, 0]
@@ -1094,57 +1181,57 @@ class DatabaseAPI:
                 self.insert_metrics(feature_id, result_idx, commit=commit)
 
     def MRM_OMA_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
-        spcm_info = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
+        spcm_info = self.select_rawdata_files(session_id,data_type='SPCM')
         modulated_spcm = {}
         for data in spcm_info:
-            electric_info = self.select_electric_info_by_data_id(data['data_id'])[0]
-            if electric_info['element'] =='pn':
+            electric_info = self.select_electric(data['data_id'])[0]
+            if electric_info['element'] == 'pn':
                 voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
                 modulated_spcm[voltage] = data
+        if len(modulated_spcm) >= 2:
+            modulated_voltage = np.array(list(modulated_spcm.keys()))
+            non_modulated_idx = np.argmin(np.square(modulated_voltage))
+            max_modulated_idx = np.argmax(np.square(modulated_voltage))
+            non_modulated_info = modulated_spcm[modulated_voltage[non_modulated_idx]]
+            max_modulated_info = modulated_spcm[modulated_voltage[max_modulated_idx]]
 
-        modulated_voltage = np.array(list(modulated_spcm.keys()))
-        non_modulated_idx = np.argmin(np.square(modulated_voltage))
-        max_modulated_idx = np.argmax(np.square(modulated_voltage))
-        non_modulated_info = modulated_spcm[modulated_voltage[non_modulated_idx]]
-        max_modulated_info = modulated_spcm[modulated_voltage[max_modulated_idx]]
-
-        non_modulated_path = non_modulated_info['file_path']
-        max_modulated_path = max_modulated_info['file_path']
-        
-        _,modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / max_modulated_path)
-        _,non_modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / non_modulated_path)
-        result, algorithm_name, version = MRM_OMA_analysis(modulated_spcm, 
-                                                            non_modulated_spcm, start=start, end=end)
-        
-        delta_modulated_voltage = abs(modulated_voltage[max_modulated_idx] - modulated_voltage[non_modulated_idx])
-        modulated_efficiency = (result['Delta Wavelength'][0]/delta_modulated_voltage)
-        result['Modulated Voltage'] = (float(round(delta_modulated_voltage,3)), 'V')
-        result['Modulated Efficiency'] = (float(round(modulated_efficiency,3)), 'pm/V')
-        analysis_id = self.insert_analysis(session_id = session_id,
-                                            analysis_type = 'MRM_OMA_analysis',
-                                            instance_no = 0,
-                                            algorithm = algorithm_name,
-                                            version = version,
-                                            commit=commit)
-        self.insert_sources(analysis_id, non_modulated_info["data_id"], commit=commit)
-        self.insert_sources(analysis_id, max_modulated_info["data_id"], commit=commit)
-        feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='OMA parameters', feature_idx=0, commit=commit)
-        result = {key:(result[key][0],result[key][1]) for key in result}
-        self.insert_metrics(feature_id, result, commit=commit)
+            non_modulated_path = non_modulated_info['file_path']
+            max_modulated_path = max_modulated_info['file_path']
+            
+            _,modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / max_modulated_path)
+            _,non_modulated_spcm = read_spectrum_lite(Path(self.db_path).parent / non_modulated_path)
+            result, algorithm_name, version = MRM_OMA_analysis(modulated_spcm, 
+                                                                non_modulated_spcm, start=start, end=end)
+            
+            delta_modulated_voltage = abs(modulated_voltage[max_modulated_idx] - modulated_voltage[non_modulated_idx])
+            modulated_efficiency = (result['Delta Wavelength'][0]/delta_modulated_voltage)
+            result['Modulated Voltage'] = (float(round(delta_modulated_voltage,3)), 'V')
+            result['Modulated Efficiency'] = (float(round(modulated_efficiency,3)), 'pm/V')
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                                analysis_type = 'MRM_OMA_analysis',
+                                                instance_no = 0,
+                                                algorithm = algorithm_name,
+                                                version = version,
+                                                commit=commit)
+            self.insert_sources(analysis_id, non_modulated_info["data_id"], commit=commit)
+            self.insert_sources(analysis_id, max_modulated_info["data_id"], commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='OMA parameters', feature_idx=0, commit=commit)
+            result = {key:(result[key][0],result[key][1]) for key in result}
+            self.insert_metrics(feature_id, result, commit=commit)
 
     def MRM_tuning_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
-        spcm_info = self.select_data_ids_paths_by_session(session_id, data_type='SPCM')
-        dciv_info = self.select_data_ids_paths_by_session(session_id, data_type='DCIV')
+        spcm_info = self.select_rawdata_files(session_id,data_type='SPCM')
+        dciv_info = self.select_rawdata_files(session_id, data_type='DCIV')
         
         spcm = {}
         for data in spcm_info:
-            electric_info = self.select_electric_info_by_data_id(data['data_id'])[0]
+            electric_info = self.select_electric(data['data_id'])[0]
             if electric_info['element'] =='heat':
                 voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
                 spcm[voltage] = data
         dciv = {}
         for data in dciv_info:
-            electric_info = self.select_electric_info_by_data_id(data['data_id'])[0]
+            electric_info = self.select_electric(data['data_id'])[0]
             if electric_info['element'] =='heat':
                 voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
                 electric_data = read_dcvi(Path(self.db_path).parent / data['file_path'])
@@ -1184,10 +1271,10 @@ class DatabaseAPI:
             self.insert_metrics(feature_id, result, commit=commit)
 
     def MRM_SSRF_analysis_by_session(self,session_id,commit=True):
-        ssrf_info = self.select_data_ids_paths_by_session(session_id, data_type='SSRF')
+        ssrf_info = self.select_rawdata_files(session_id, data_type='SSRF')
         input_powers = []
         for data in ssrf_info:
-            input_powers += [float(self.select_optical_info_by_data_id(data['data_id'])['input_power']
+            input_powers += [float(self.select_optical(data['data_id'])['input_power']
                                    .replace(' dBm', ''))]
         sorted_index = np.argsort(input_powers)
         for no,idx in enumerate(sorted_index):
@@ -1204,5 +1291,4 @@ class DatabaseAPI:
                                                commit=commit)
             self.insert_sources(analysis_id, ssrf_info[idx]["data_id"], commit=commit)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=0, commit=commit)
-            #result = {key:(result[key][0],result[key][1]) for key in result}
             self.insert_metrics(feature_id, result, commit=commit)
