@@ -1001,8 +1001,40 @@ class DatabaseAPI:
                     valid_files[file_path] = meta
                 except ValueError:
                     invalid_files.append(file_path.name)
-
+        if len(valid_files) == 0:
+            print("資料夾內沒有符合格式的檔案。")
+            print('testing filename parsing')
+            try:
+                file_path = list(folder.glob("*.csv"))[0]
+            except IndexError:
+                file_path = list(folder.glob("*.s2p"))[0]
+            cls.test_filename_parsing(file_path.name)
+            raise ValueError("資料夾內沒有符合格式的檔案。")
         return valid_files, invalid_files
+
+    @classmethod
+    def test_filename_parsing(cls,filename):
+        patterns = [("datatype", r"^[^_]+"),
+                    ("wafer", r"_[^_]+"),
+                    ("doe", r"_[^_]+"),
+                    ("cage", r"_[^_]+"),
+                    ("die", r"_die\d+"),
+                    ("temperature", r"_-?\d+C"),
+                    ("repeat", r"_\#\d+"),
+                    ("device", r"_[^_]+"),
+                    ("channel", r"_ch_\d+_\d+"),
+                    ("power", r"_-?\d+dBm"),
+                    ("rest", r".*\.(?:csv|txt|s2p)$")]
+
+        pos = 0
+        for name, pattern in patterns:
+            m = re.match(pattern, filename[pos:])
+            if not m:
+                print(f"Mismatch at {name}")
+                break
+            else:
+                print(f"{name}: pass")
+            pos += m.end()
 
     @classmethod
     def move_file(cls, src_dst):

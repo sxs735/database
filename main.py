@@ -4,12 +4,12 @@ from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
+db_path = Path(r"D:\Data\1_DataBase") / "DataBase2.db"
 #db_path = Path(r"R:\KF處理\SQLite") / "DataBase.db"
 #db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase 3.db"
 
 #%%
-folder = '260305_MTK_MRM'
+folder = '260310_RF_test'
 folder_path = Path(r"D:\processing\資料庫整理") / folder
 #folder_path = Path(r"C:\Users\mg942\Desktop\元澄") / folder
 # Optional batch import step for freshly measured folders
@@ -60,4 +60,28 @@ with DatabaseAPI(db_path) as db:
 with DatabaseAPI(db_path) as db:
     #output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")
     res = db.select_session(cage= cage, measure_name= measure_name)
+# %%
+import re
+def test_filename_parsing(filename):
+    patterns = [("datatype", r"^[^_]+"),
+                ("wafer", r"_[^_]+"),
+                ("doe", r"_[^_]+"),
+                ("cage", r"_[^_]+"),
+                ("die", r"_die\d+"),
+                ("temperature", r"_-?\d+C"),
+                ("repeat", r"_\#\d+"),
+                ("device", r"_[^_]+"),
+                ("channel", r"_ch_\d+_\d+"),
+                ("power", r"_-?\d+dBm"),
+                ("rest", r".*\.(?:csv|txt|s2p)$")]
+
+    pos = 0
+    for name, pattern in patterns:
+        m = re.match(pattern, filename[pos:])
+        if not m:
+            print(f"Mismatch at {name}")
+            break
+        else:
+            print(f"{name}: pass")
+        pos += m.end()
 # %%
