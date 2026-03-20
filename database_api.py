@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+from importlib.resources import path
+from importlib.resources import path
 import re
 import shutil
 import sqlite3
@@ -692,6 +694,26 @@ class DatabaseAPI:
                     r[f] = []
         return rows
 
+    def _select_data_by_dut_id(self, dut_id: int):
+        sql = f"""SELECT r.data_id, r.file_path
+                  FROM {self.TABLE_DATA} r
+                  JOIN MeasureSession s
+                    ON r.session_id = s.session_id
+                  JOIN Measurement m
+                    ON s.measure_id = m.measure_id
+                  WHERE m.DUT_id = ?
+                  ORDER BY r.data_id"""
+        return self.query(sql, (dut_id,))
+    
+    def _select_data_by_measure_id(self, measure_id: int):
+        sql = f"""SELECT r.data_id, r.file_path, r.data_type
+                  FROM {self.TABLE_DATA} r
+                  JOIN MeasureSession s
+                    ON r.session_id = s.session_id
+                  WHERE s.measure_id = ?
+                  ORDER BY r.data_id"""
+        return self.query(sql, (measure_id,))
+    
     # OpticalInfo / ElectricInfo 查詢
     def select_optical(self, data_id: int) -> Optional[Dict[str, Any]]:
         """取得單筆數據的光學設定。"""
@@ -727,6 +749,38 @@ class DatabaseAPI:
                         self.TABLE_ANALYSIS_SOURCES: "analysis_id",
                         self.TABLE_FEATURES: "feature_id",
                         self.TABLE_METRICS: "metric_id"}
+        if table not in TABLE_ID_MAP:
+            raise ValueError(f"Unsupported table for deletion: {table}")
+        
+        move_path = []
+        if table == self.TABLE_DUT:
+            rawdata = self._select_data_by_dut_id(record_id)
+        elif table == self.TABLE_MEASUREMENTS:
+            rawdata = self._select_data_by_measure_id(record_id)
+        else:
+            rawdata = []
+        
+        #move raw data files to Redo folder before deletion
+        for raw in rawdata:
+            filepath = Path(raw["file_path"])
+            datatype = raw['data_type']
+            folder = filepath.parts[-3]
+            target_root_path = Path(self.db_path).parent
+            target_dir = target_root_path / 'Redo' / folder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            if datatype == 'SPCM':
+                (target_root_path / filepath).unlink()
+                filepath = filepath.parent / filepath.name.replace("SPCMs", "SPCM")
+            dst = target_dir / filepath.name
+            move_path.append((target_root_path / filepath, dst))
+        if move_path:
+            # for src_dst in move_path:
+            #     #self.move_file(src_dst)
+            with ThreadPoolExecutor() as executor:
+                list(tqdm(executor.map(self.move_file, move_path), 
+                        total=len(move_path), 
+                        desc="Moving", 
+                        unit="file"))
         
         id_column = TABLE_ID_MAP[table]
         query = f"DELETE FROM {table} WHERE {id_column} = ?"
@@ -735,6 +789,17 @@ class DatabaseAPI:
             self.conn.commit()
         return cursor.rowcount
     
+
+    def remove_empty_dirs(self):
+        root = Path(self.db_path).parent / self.RAW_DATA_FOLDER
+        # 由底層往上遍歷
+        for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if path.is_dir():
+                try:
+                    path.rmdir()  # 只能刪空資料夾
+                except OSError:
+                    pass  # 非空資料夾會丟錯，忽略
+
     def vacuum(self,
                into_path: Optional[Union[str, Path]] = None,
                checkpoint: Optional[str] = "TRUNCATE",
@@ -924,6 +989,7 @@ class DatabaseAPI:
     @classmethod
     def parse_filename(cls, filename: str) -> Dict[str, Any]:
         name = Path(filename).name
+        #print(name)
         match = cls.MAIN_PATTERN.match(name)
 
         if not match:
@@ -947,6 +1013,7 @@ class DatabaseAPI:
             token = tokens[i]
             if token == "SMU":
                 match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 3])
+                #print(match.groups())
                 result["SMU"].append({"element": tokens[i + 1],
                                       "channel": tokens[i + 2],
                                       "set_mode": 'VOLT' if match[2] in ['V', 'mV'] else 'CURR',

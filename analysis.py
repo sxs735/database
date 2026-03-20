@@ -9,6 +9,13 @@ def tofloat(value):
     except (ValueError, TypeError):
         return np.nan
 
+def mueller_to_loss(m11, m12, m13, m14):
+    T_max = m11 + np.sqrt(m12**2 + m13**2 + m14**2)
+    T_min = m11 - np.sqrt(m12**2 + m13**2 + m14**2)
+    loss_max = -10 * np.log10(T_min)
+    loss_min = -10 * np.log10(T_max)
+    return loss_max, loss_min
+
 def save_to_csv(path, rows, header=None):
     """Write tabular data to a CSV file using UTF-8 encoding."""
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -70,6 +77,88 @@ def read_spectrum_lite(path):
             else:
                 data += [[tofloat(value) for value in row]]
     return head, np.array(data, dtype=float)
+
+def read_spectrum_all(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        mode = None
+        header = []
+        Min_Max = []
+        Mueller = []
+        Avg = []
+        PDL = []
+        TE_TM = []
+        for i,row in enumerate(reader):
+            #print(row)
+            if '=== Min' in row and mode != 'min_max':
+                mode = 'min_max'
+            elif '=== Average IL (TLS 0) ===' in row and mode != 'average_il':
+                mode = 'average_il'
+            elif '=== Mueller Row 1 (TLS 0) ===' in row and mode != 'mueller':
+                mode = 'mueller'
+            elif '=== PDL (TLS 0) ===' in row and mode != 'pdl':
+                mode = 'pdl'
+            elif '=== TE' in row and mode != 'te_tm':
+                mode = 'te_tm'
+            elif mode == 'min_max':
+                Min_Max += [[tofloat(value) for value in row]]
+            elif mode == 'average_il':
+                Avg += [[tofloat(value) for value in row]]
+            elif mode == 'mueller':
+                Mueller += [[tofloat(value) for value in row]]
+            elif mode == 'pdl':
+                PDL += [[tofloat(value) for value in row]]
+            elif mode == 'te_tm':
+                TE_TM += [[tofloat(value) for value in row]]
+            else:
+                header += [row]
+        data = {'min_max': np.array(Min_Max),
+                'average_il': np.array(Avg),
+                'mueller': np.array(Mueller),
+                'pdl': np.array(PDL),
+                'te_tm': np.array(TE_TM),
+                'header': header}
+    return data
+
+def exchange_2ports(file_path):
+    old_csv = read_spectrum_all(file_path)
+    for key in old_csv:
+        if key == 'min_max':
+            old_csv[key] = old_csv[key][:, [0, 3, 4, 1, 2]]
+        elif key == 'average_il':
+            old_csv[key] = old_csv[key][:, [0, 2, 1]]
+        elif key == 'mueller':
+            old_csv[key] = old_csv[key][:, [0, 5, 6, 7, 8, 1, 2, 3, 4]]
+        elif key == 'pdl':
+            old_csv[key] = old_csv[key][:, [0, 2, 1]]
+        elif key == 'te_tm':
+            old_csv[key] = old_csv[key][:, [0, 3, 4, 1, 2]]
+        elif key == 'header':
+            port = []
+            for i, row in enumerate(old_csv[key]):
+                match = re.search(r"DaqPort\d+", row[0])
+                if match:
+                    port += [i]
+            pair = [(port[2*i],port[2*i+1]) for i in range(len(port)//2)]
+            for i, j in pair:
+                old_csv[key][i], old_csv[key][j] = old_csv[key][j], old_csv[key][i]
+
+    new_csv = (old_csv['header'] + 
+               [['=== Min','Max IL (TLS 0) ===']] +
+               old_csv['min_max'].tolist() +
+               [['=== Mueller Row 1 (TLS 0) ===']] +
+               old_csv['mueller'].tolist() +
+               [['=== Average IL (TLS 0) ===']] +
+               old_csv['average_il'].tolist() +
+               [['=== PDL (TLS 0) ===']] +
+               old_csv['pdl'].tolist() +
+               [['=== TE','TM (TLS 0) ===']] +
+               old_csv['te_tm'].tolist())
+    
+    new_path = file_path.with_name(file_path.stem + "_new.csv")
+    with open(new_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerows(new_csv)
 
 def read_ssrf(path):
     """
@@ -291,9 +380,14 @@ def MRM_OMA_analysis(modulated_spcm, non_modulated_spcm, start=1305, end=1315):
     wavelength = non_modulated_spcm[:, 0]
     loss_vh =modulated_spcm[:, ref_i] - modulated_spcm[:, 1]
     loss_v0 =non_modulated_spcm[:, ref_i] - non_modulated_spcm[:, 1]
-    diffT = 10**(loss_vh/10)-10**(loss_v0/10)
+    T_vh = 10**(loss_vh/10)    
+    T_v0 = 10**(loss_v0/10)
+
+    diffT = T_vh - T_v0
     vaild_value = ~np.isnan(diffT)
     diffT = diffT[vaild_value]
+    T_vh = T_vh[vaild_value]
+    T_v0 = T_v0[vaild_value]
     loss_v0  = loss_v0[vaild_value]
     loss_vh  = loss_vh[vaild_value]
     wavelength = wavelength[vaild_value]
@@ -303,7 +397,17 @@ def MRM_OMA_analysis(modulated_spcm, non_modulated_spcm, start=1305, end=1315):
     valley_vh = wavelength[loss_vh.argmin()]
     delta_wl = (valley_vh - valley_v0)*1000
     detuning =  oma_wl-valley_v0
+    p0 = np.interp(oma_wl, wavelength, T_v0)
+    p1 = np.interp(oma_wl, wavelength, T_vh)
+    # import matplotlib.pyplot as plt
+    # plt.plot(wavelength, T_vh, label='modulated')
+    # plt.plot(wavelength, T_v0, label='non-modulated')
+    # plt.plot([oma_wl,oma_wl],[p0,p1],'go')
+    # plt.show()
+    # print(p0,p1)
+    roma = 10*np.log10(p1-p0)
     result = {'OMA Wavelength': (float(round(oma_wl,3)), 'nm'),
+              'rOMA': (float(round(roma,3)), 'dB'),
               'Delta Wavelength': (float(round(delta_wl,3)), 'pm'),
               'Detuning': (float(round(detuning,3)), 'nm'),
               'Valley Wavelength 0': (float(round(valley_v0,3)), 'nm'),
