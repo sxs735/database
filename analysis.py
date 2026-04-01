@@ -445,3 +445,14 @@ def MRM_tuning_analysis(modulated_spcm, non_modulated_spcm, start=1305, end=1315
     return (result,
             inspect.currentframe().f_code.co_name,
             version)
+
+def Get_loss_at_wavelength(spcm, target_wavelength):
+    version = "1.0.0"
+    wavelength = spcm[:, 0]
+    loss = spcm[:, 1]
+    idx = np.argmin(np.abs(wavelength - target_wavelength))
+    result = {'Wavelength': (float(round(wavelength[idx],3)), 'nm'),
+              'Loss': (float(round(loss[idx],3)), 'dB')}
+    return (result,
+            inspect.currentframe().f_code.co_name, 
+            version)

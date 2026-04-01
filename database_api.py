@@ -1061,9 +1061,11 @@ class DatabaseAPI:
         valid_files: Dict[Path, Dict[str, Any]] = {}
         invalid_files: List[str] = []
 
+        birthtime = []
         for ext in cls.SUPPORTED_EXTENSIONS:
             for file_path in folder.glob(f"*{ext}"):
                 try:
+                    birthtime.append(file_path.stat().st_birthtime)
                     meta = cls.parse_filename(file_path.name)
                     valid_files[file_path] = meta
                 except ValueError:
@@ -1077,7 +1079,7 @@ class DatabaseAPI:
                 file_path = list(folder.glob("*.s2p"))[0]
             cls.test_filename_parsing(file_path.name)
             raise ValueError("資料夾內沒有符合格式的檔案。")
-        return valid_files, invalid_files
+        return valid_files, invalid_files,min(birthtime)
 
     @classmethod
     def test_filename_parsing(cls,filename):
@@ -1137,7 +1139,7 @@ class DatabaseAPI:
 
         folder = Path(folder_path)
         # 解析輸入資料夾，將符合命名規範的檔案與不合規檔案分開
-        valid_files, invalid_files = self.parse_folder(folder)
+        valid_files, invalid_files, tested_timestamp = self.parse_folder(folder)
         target_root_path = Path(self.db_path).parent / self.RAW_DATA_FOLDER
 
         try:
@@ -1146,7 +1148,7 @@ class DatabaseAPI:
         except Exception:
             pass
 
-        tested_timestamp = folder.stat().st_birthtime
+        #tested_timestamp = folder.stat().st_birthtime
         move_path = []
         try:
             # 使用交易確保整批匯入的原子性
@@ -1390,4 +1392,21 @@ class DatabaseAPI:
                                                commit=commit)
             self.insert_sources(analysis_id, ssrf_info[idx]["data_id"], commit=commit)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=0, commit=commit)
+            self.insert_metrics(feature_id, result, commit=commit)
+
+    def Loss_analysis_by_session(self,session_id,target_wavelength=1310,commit=True):
+        spcm_info = self.select_rawdata_files(session_id, data_type='SPCM')
+        for idx,info in enumerate(spcm_info):
+            filepath = Path(self.db_path).parent / info['file_path']
+            head, data = read_spectrum_lite(filepath)
+            result, algorithm_name, version = Get_loss_at_wavelength(data, target_wavelength)
+
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                               analysis_type = 'Loss_analysis',
+                                               instance_no = 0,
+                                               algorithm = algorithm_name,
+                                               version = version,
+                                               commit=commit)
+            self.insert_sources(analysis_id, spcm_info[idx]["data_id"], commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SPCM parameters', feature_idx=0, commit=commit)
             self.insert_metrics(feature_id, result, commit=commit)
