@@ -359,8 +359,13 @@ def MRM_SSRF_analysis(frequency,
     between = ((smooth_s21[:-1]-(ref_loss-drop_levels))*(smooth_s21[1:]-(ref_loss-drop_levels))<=0) & (smooth_s21[:-1] != smooth_s21[1:])
     inter_point = frequency[:-1] + ((ref_loss-drop_levels) - smooth_s21[:-1]) * (frequency[1:] - frequency[:-1]) / (smooth_s21[1:] - smooth_s21[:-1])
     inter_x = inter_point[between]
-    frequency_x2 = np.min(inter_x[(inter_x - reference_frequency)>0])
-    bandwidth = frequency_x2 - reference_frequency
+    mask = inter_x > reference_frequency
+    inter_x = inter_x[mask]
+    if len(inter_x) > 0:
+        frequency_x2 = np.min(inter_x[(inter_x - reference_frequency)>0])
+        bandwidth = frequency_x2 - reference_frequency
+    else:
+        bandwidth = 0
 
     result = {'Bandwidth': (float(round(bandwidth, 3)), 'GHz')}
 

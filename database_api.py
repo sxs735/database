@@ -1379,6 +1379,7 @@ class DatabaseAPI:
                                    .replace(' dBm', ''))]
         sorted_index = np.argsort(input_powers)
         for no,idx in enumerate(sorted_index):
+            #print(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
             ssrf_data = read_ssrf(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
             frequency = np.real(ssrf_data[:,0])
             s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
@@ -1410,3 +1411,34 @@ class DatabaseAPI:
             self.insert_sources(analysis_id, spcm_info[idx]["data_id"], commit=commit)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SPCM parameters', feature_idx=0, commit=commit)
             self.insert_metrics(feature_id, result, commit=commit)
+
+    def MRM_SSRF_MTK_analysis_by_session(self,session_id,commit=True):
+        ssrf_info = self.select_rawdata_files(session_id, data_type='SSRF')
+        group = {}
+        for info in ssrf_info:
+            electric_info = self.select_electric(info['data_id'])[0]
+            voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
+            wavelength = float(self.select_another(info['data_id'])[0]['info_value'])
+            info['voltage'] = voltage
+            info['wavelength'] = wavelength
+            if voltage not in group:
+                group[voltage] = [wavelength]
+            else:
+                group[voltage] += [wavelength]
+        for voltage in group:
+            group[voltage] = np.sort(group[voltage])
+        for no, info in enumerate(ssrf_info):
+            ssrf_data = read_ssrf(Path(self.db_path).parent / info['file_path'])
+            frequency = np.real(ssrf_data[:,0])
+            s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
+            result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                               analysis_type = 'MRM_SSRF-MTK',
+                                               instance_no = no,
+                                               algorithm = algorithm_name,
+                                               version = version,
+                                               commit=False)
+            idx = int(np.where(group[info['voltage']] == info['wavelength'])[0][0])
+            self.insert_sources(analysis_id, info["data_id"], commit=False)
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=idx, commit=False)
+            self.insert_metrics(feature_id, result, commit=False)
