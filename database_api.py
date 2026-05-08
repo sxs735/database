@@ -1,6 +1,4 @@
 from concurrent.futures import ThreadPoolExecutor
-from importlib.resources import path
-from importlib.resources import path
 import re
 import shutil
 import sqlite3
@@ -205,7 +203,8 @@ class DatabaseAPI:
                            operator: Optional[str] = None,
                            system: Optional[str] = None,
                            notes: Optional[str] = None,
-                           measured_at: Optional[Union[datetime, int, float]] = None,
+                           measured_start: Optional[Union[datetime, int, float]] = None,
+                           measured_end: Optional[Union[datetime, int, float]] = None,
                            commit: bool = True) -> int:
         """
         插入測量會話記錄
@@ -213,7 +212,8 @@ class DatabaseAPI:
         Args:
             dut_id: DUT ID
             session_name: 會話名稱
-            measured_at: 測試時間（默認為當前時間）
+            measured_start: 測試開始時間（可選）
+            measured_end: 測試結束時間（可選）
             operator: 操作員
             system: 測試系統
             notes: 備註
@@ -221,18 +221,20 @@ class DatabaseAPI:
         Returns:
             session_id
         """
-        timestamp = self._normalize_timestamp(measured_at).isoformat(sep=" ")
+        start_time = self._normalize_timestamp(measured_start).isoformat(sep=" ")
+        end_time = self._normalize_timestamp(measured_end).isoformat(sep=" ")
 
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_MEASUREMENTS} 
-                                   (DUT_id, measure_name, measured_at, operator, system, notes)
-                                   VALUES (?, ?, ?, ?, ?, ?)
+                                   (DUT_id, measure_name, measured_start, measured_end, operator, system, notes)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?)
                                    ON CONFLICT (DUT_id, measure_name) DO UPDATE SET
-                                   measured_at = excluded.measured_at,
+                                   measured_start = excluded.measured_start,
+                                   measured_end = excluded.measured_end,
                                    operator = excluded.operator,
                                    system = excluded.system,
                                    notes = excluded.notes
                                    RETURNING measure_id""",
-                                  (dut_id, session_name, timestamp, operator, system, notes))
+                                  (dut_id, session_name, start_time, end_time, operator, system, notes))
         measure_id = cursor.fetchone()["measure_id"]
         if commit:
             self.conn.commit()
@@ -552,9 +554,11 @@ class DatabaseAPI:
     def select_measurements(self,
                             dut_id: Optional[int] = None,
                             measure_name: Optional[str] = None,
-                            measured_at_start: Optional[Union[datetime, int, float, str]] = None,
-                            measured_at_end: Optional[Union[datetime, int, float, str]] = None) -> List[Dict[str, Any]]:
-        """依 DUT、量測名稱與時間範圍篩選 Measurement。"""
+                            measured_start_start: Optional[Union[datetime, int, float, str]] = None,
+                            measured_start_end: Optional[Union[datetime, int, float, str]] = None,
+                            measured_end_start: Optional[Union[datetime, int, float, str]] = None,
+                            measured_end_end: Optional[Union[datetime, int, float, str]] = None) -> List[Dict[str, Any]]:
+        """依 DUT、量測名稱與開始/結束時間範圍篩選 Measurement。"""
 
         sql = f"SELECT * FROM {self.TABLE_MEASUREMENTS} WHERE 1=1"
         params: List[Any] = []
@@ -566,17 +570,25 @@ class DatabaseAPI:
             sql += " AND measure_name = ?"
             params.append(measure_name)
 
-        start_time = self._normalize_timestamp_for_query(measured_at_start)
-        end_time = self._normalize_timestamp_for_query(measured_at_end)
+        start_start_time = self._normalize_timestamp_for_query(measured_start_start)
+        start_end_time = self._normalize_timestamp_for_query(measured_start_end)
+        end_start_time = self._normalize_timestamp_for_query(measured_end_start)
+        end_end_time = self._normalize_timestamp_for_query(measured_end_end)
 
-        if start_time is not None:
-            sql += " AND measured_at >= ?"
-            params.append(start_time)
-        if end_time is not None:
-            sql += " AND measured_at <= ?"
-            params.append(end_time)
+        if start_start_time is not None:
+            sql += " AND measured_start >= ?"
+            params.append(start_start_time)
+        if start_end_time is not None:
+            sql += " AND measured_start <= ?"
+            params.append(start_end_time)
+        if end_start_time is not None:
+            sql += " AND measured_end >= ?"
+            params.append(end_start_time)
+        if end_end_time is not None:
+            sql += " AND measured_end <= ?"
+            params.append(end_end_time)
 
-        sql += " ORDER BY measured_at, measure_id"
+        sql += " ORDER BY measured_start, measure_id"
         return self.query(sql, tuple(params))
 
     def select_session(self,
@@ -586,8 +598,10 @@ class DatabaseAPI:
                        cage: Optional[str] = None,
                        device: Optional[str] = None,
                        measure_name: Optional[str] = None,
-                       measured_at_start: Optional[Union[datetime, int, float, str]] = None,
-                       measured_at_stop: Optional[Union[datetime, int, float, str]] = None,
+                       measured_start_start: Optional[Union[datetime, int, float, str]] = None,
+                       measured_start_stop: Optional[Union[datetime, int, float, str]] = None,
+                       measured_end_start: Optional[Union[datetime, int, float, str]] = None,
+                       measured_end_stop: Optional[Union[datetime, int, float, str]] = None,
                        session_idx: Optional[int] = None) -> List[int]:
         """依 DUT、量測資訊與時間/序號條件取得 session_id 列表。"""
 
@@ -617,15 +631,23 @@ class DatabaseAPI:
             sql += " AND m.measure_name = ?"
             params.append(measure_name)
 
-        start_time = self._normalize_timestamp_for_query(measured_at_start)
-        stop_time = self._normalize_timestamp_for_query(measured_at_stop)
+        start_time = self._normalize_timestamp_for_query(measured_start_start)
+        stop_time = self._normalize_timestamp_for_query(measured_start_stop)
+        end_start_time = self._normalize_timestamp_for_query(measured_end_start)
+        end_stop_time = self._normalize_timestamp_for_query(measured_end_stop)
 
         if start_time is not None:
-            sql += " AND m.measured_at >= ?"
+            sql += " AND m.measured_start >= ?"
             params.append(start_time)
         if stop_time is not None:
-            sql += " AND m.measured_at <= ?"
+            sql += " AND m.measured_start <= ?"
             params.append(stop_time)
+        if end_start_time is not None:
+            sql += " AND m.measured_end >= ?"
+            params.append(end_start_time)
+        if end_stop_time is not None:
+            sql += " AND m.measured_end <= ?"
+            params.append(end_stop_time)
         if session_idx is not None:
             sql += " AND ms.session_idx = ?"
             params.append(session_idx)
@@ -766,10 +788,13 @@ class DatabaseAPI:
             datatype = raw['data_type']
             folder = filepath.parts[-3]
             target_root_path = Path(self.db_path).parent
-            target_dir = target_root_path / 'Redo' / folder
+            target_dir = target_root_path / 'processing' / folder
             target_dir.mkdir(parents=True, exist_ok=True)
             if datatype == 'SPCM':
-                (target_root_path / filepath).unlink()
+                try:
+                    (target_root_path / filepath).unlink()
+                except FileNotFoundError:
+                    pass
                 filepath = filepath.parent / filepath.name.replace("SPCMs", "SPCM")
             dst = target_dir / filepath.name
             move_path.append((target_root_path / filepath, dst))
@@ -860,6 +885,31 @@ class DatabaseAPI:
     # =========================
     # 輔助方法
     # =========================
+    def take_rawdata(self, measure_id: int):
+        move_path = []
+        rawdata = self._select_data_by_measure_id(measure_id)
+        
+        #move raw data files to Redo folder before deletion
+        for raw in rawdata:
+            filepath = Path(raw["file_path"])
+            datatype = raw['data_type']
+            folder = filepath.parts[-3]
+            target_root_path = Path(self.db_path).parent
+            target_dir = target_root_path / 'processing' / folder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            if datatype == 'SPCM':
+                (target_root_path / filepath).unlink()
+                filepath = filepath.parent / filepath.name.replace("SPCMs", "SPCM")
+            dst = target_dir / filepath.name
+            move_path.append((target_root_path / filepath, dst))
+        if move_path:
+            with ThreadPoolExecutor() as executor:
+                list(tqdm(executor.map(self.copy_file, move_path), 
+                        total=len(move_path), 
+                        desc="Copying", 
+                        unit="file"))
+        return None
+
     def add_column(self,
                    table_name: str,
                    column_name: str,
@@ -1065,7 +1115,7 @@ class DatabaseAPI:
         for ext in cls.SUPPORTED_EXTENSIONS:
             for file_path in folder.glob(f"*{ext}"):
                 try:
-                    birthtime.append(file_path.stat().st_birthtime)
+                    birthtime.append(file_path.stat().st_mtime)
                     meta = cls.parse_filename(file_path.name)
                     valid_files[file_path] = meta
                 except ValueError:
@@ -1079,7 +1129,7 @@ class DatabaseAPI:
                 file_path = list(folder.glob("*.s2p"))[0]
             cls.test_filename_parsing(file_path.name)
             raise ValueError("資料夾內沒有符合格式的檔案。")
-        return valid_files, invalid_files,min(birthtime)
+        return valid_files, invalid_files,min(birthtime),max(birthtime)
 
     @classmethod
     def test_filename_parsing(cls,filename):
@@ -1139,7 +1189,7 @@ class DatabaseAPI:
 
         folder = Path(folder_path)
         # 解析輸入資料夾，將符合命名規範的檔案與不合規檔案分開
-        valid_files, invalid_files, tested_timestamp = self.parse_folder(folder)
+        valid_files, invalid_files, start_timestamp, end_timestamp = self.parse_folder(folder)
         target_root_path = Path(self.db_path).parent / self.RAW_DATA_FOLDER
 
         try:
@@ -1181,7 +1231,8 @@ class DatabaseAPI:
                                                      session_name=session_name,
                                                      operator="T&P",
                                                      system="CM300v1.0",
-                                                     measured_at=tested_timestamp,
+                                                     measured_start=start_timestamp,
+                                                     measured_end=end_timestamp,
                                                      notes="",
                                                      commit=False)
                 
@@ -1244,14 +1295,14 @@ class DatabaseAPI:
             self.conn.commit()
             # 交易完成後移動或複製檔案，避免 I/O 影響 DB 寫入
             with ThreadPoolExecutor() as executor:
-                # list(tqdm(executor.map(self.move_file, move_path), 
-                #         total=len(move_path), 
-                #         desc="Moving", 
-                #         unit="file"))
-                list(tqdm(executor.map(self.copy_file, move_path), 
+                list(tqdm(executor.map(self.move_file, move_path), 
                         total=len(move_path), 
-                        desc="copying", 
+                        desc="Moving", 
                         unit="file"))
+                # list(tqdm(executor.map(self.copy_file, move_path), 
+                #         total=len(move_path), 
+                #         desc="copying", 
+                #         unit="file"))
         except Exception:
             if self.conn:
                 self.conn.rollback()
@@ -1416,17 +1467,22 @@ class DatabaseAPI:
         ssrf_info = self.select_rawdata_files(session_id, data_type='SSRF')
         group = {}
         for info in ssrf_info:
+            input_powers = float(self.select_optical(info['data_id'])['input_power'].replace(' dBm', ''))
             electric_info = self.select_electric(info['data_id'])[0]
             voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
             wavelength = float(self.select_another(info['data_id'])[0]['info_value'])
             info['voltage'] = voltage
             info['wavelength'] = wavelength
-            if voltage not in group:
-                group[voltage] = [wavelength]
+            info['input_power'] = input_powers
+            if input_powers not in group:
+                group[input_powers] = {}
+            if voltage not in group[input_powers]:
+                group[input_powers][voltage] = [wavelength]
             else:
-                group[voltage] += [wavelength]
-        for voltage in group:
-            group[voltage] = np.sort(group[voltage])
+                group[input_powers][voltage] += [wavelength]
+        for input_power in group:
+            for voltage in group[input_power]:
+                group[input_power][voltage] = np.sort(group[input_power][voltage])
         for no, info in enumerate(ssrf_info):
             ssrf_data = read_ssrf(Path(self.db_path).parent / info['file_path'])
             frequency = np.real(ssrf_data[:,0])
@@ -1438,7 +1494,26 @@ class DatabaseAPI:
                                                algorithm = algorithm_name,
                                                version = version,
                                                commit=False)
-            idx = int(np.where(group[info['voltage']] == info['wavelength'])[0][0])
+            idx = int(np.where(group[info['input_power']][info['voltage']] == info['wavelength'])[0][0])
             self.insert_sources(analysis_id, info["data_id"], commit=False)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=idx, commit=False)
             self.insert_metrics(feature_id, result, commit=False)
+
+    # def DCIV_by_session(self,session_id,commit=True):
+    #     dciv_info = self.select_rawdata_files(session_id, data_type='DCIV')
+    #     for no,idx in enumerate(sorted_index):
+    #         #print(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
+    #         ssrf_data = read_ssrf(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
+    #         frequency = np.real(ssrf_data[:,0])
+    #         s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
+    #         result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
+            
+    #         analysis_id = self.insert_analysis(session_id = session_id,
+    #                                         analysis_type = 'MRM_SSRF_analysis',
+    #                                         instance_no = no,
+    #                                         algorithm = algorithm_name,
+    #                                         version = version,
+    #                                         commit=commit)
+    #         self.insert_sources(analysis_id, ssrf_info[idx]["data_id"], commit=commit)
+    #         feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=0, commit=commit)
+    #         self.insert_metrics(feature_id, result, commit=commit)

@@ -1,4 +1,6 @@
+#%%
 import csv,re
+import matplotlib
 import numpy as np
 import inspect
 from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
@@ -15,6 +17,13 @@ def mueller_to_loss(m11, m12, m13, m14):
     loss_max = -10 * np.log10(T_min)
     loss_min = -10 * np.log10(T_max)
     return loss_max, loss_min
+
+def mueller_to_stokes(m11, m12, m13, m14):
+    s0 = np.sqrt(m12**2+m13**2+m14**2)
+    x1 = m12/s0
+    x2 = m13/s0
+    x3 = m14/s0
+    return x1, x2, x3
 
 def save_to_csv(path, rows, header=None):
     """Write tabular data to a CSV file using UTF-8 encoding."""
@@ -461,3 +470,110 @@ def Get_loss_at_wavelength(spcm, target_wavelength):
     return (result,
             inspect.currentframe().f_code.co_name, 
             version)
+
+
+def CRR_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order=3):
+    """
+    MRM SPCM 頻譜分析函數
+    
+    Parameters:
+    -----------
+    wavelength : array-like
+        波長數據 (nm)
+    loss : array-like
+        損耗數據 (dB)
+    prominence : float, optional
+        峰值顯著性閾值 (default: 2)
+    distance : int, optional
+        峰值間最小距離 (default: 5)
+    baseline_order : int, optional
+        基線擬合的多項式階數 (default: 3)
+    
+    Returns:
+    --------
+    tuple : (result_dict, algorithm_name, version)
+        result_dict  -> 包含 FSR、FWHM、Q factor 等分析參數的字典
+        algorithm_name -> 字串，指出所使用的分析函數名稱
+        version -> 字串，標記分析演算法版本
+    """
+    version = "1.0.0"
+    # 檢查輸入數據
+    if len(wavelength) != len(loss):
+        raise ValueError("wavelength 和 loss 的長度必須相同")
+    
+    if len(wavelength) < 10:
+        raise ValueError("數據點太少，無法進行分析")
+    
+    # 計算頻率 (THz)
+    frequency = 299792.458 / wavelength
+    
+    # 基線校正
+    baseline = np.polynomial.Polynomial.fit(wavelength, loss, baseline_order)
+    loss_level = loss - baseline(wavelength)
+    
+    # 尋找峰值
+    peak_idx, _ = find_peaks(loss_level, prominence=prominence, distance=distance)
+
+    wavelength_x = wavelength[peak_idx]
+    frequency_x = frequency[peak_idx]
+    peak_loss = loss_level[peak_idx]
+    # 計算消光比 (Extinction Ratio)
+    ER = peak_prominences(loss_level, peak_idx)[0]
+    
+    # 計算 FWHM 和 Q factor
+    Ty = 10 ** (loss_level / 10)
+    wavelength_spacing = np.median(np.diff(wavelength))
+    ips_to_wavelength = lambda x: wavelength_spacing*x + wavelength[0]
+    widths, _, left_ips, right_ips = peak_widths(-Ty, peak_idx, rel_height=0.5)
+    FWHMnm = widths * wavelength_spacing
+    FWHMGHz = (1/ips_to_wavelength(left_ips)-1/ips_to_wavelength(right_ips))*299792458
+    Q = wavelength_x / FWHMnm
+
+    results = {'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
+               'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
+               'FWHM(GHz)': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
+               'Q factor': (np.round(Q, 0).tolist(), ''),
+               'Peak Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
+               'Peak Frequency': (np.round(frequency_x, 3).tolist(), 'THz')}
+
+    # 檢查是否找到足夠的峰值
+    if len(peak_idx) < 2 and len(peak_idx) > 0:
+        return (results,
+                inspect.currentframe().f_code.co_name, 
+                version)
+    
+    # 計算 FSR (nm)
+    FSRnm = wavelength_x[1:] - wavelength_x[:-1]
+    FSRnm = np.vstack((np.r_[FSRnm, np.nan], np.r_[np.nan, FSRnm]))
+    FSRidx = np.nanargmax(FSRnm, axis=0)
+    FSRnm = np.nanmax(FSRnm, axis=0)
+    
+    # 計算 FSR (GHz)
+    FSRGHz = frequency_x[:-1] - frequency_x[1:]
+    FSRGHz = np.vstack((np.r_[FSRGHz, np.nan], np.r_[np.nan, FSRGHz]))
+    FSRGHz = FSRGHz[FSRidx, range(len(FSRidx))]
+    
+    results.update({'FSR(nm)': (np.round(FSRnm, 3).tolist(), 'nm'),
+                    'FSR(THz)': (np.round(FSRGHz, 3).tolist(), 'THz')})
+    
+    return (results,
+            inspect.currentframe().f_code.co_name, 
+            version)
+
+#%%
+# import matplotlib.pyplot as plt
+# %matplotlib qt5
+# if __name__ == "__main__":
+#     data = read_spectrum_all(r"\\DESKTOP-GETONC5\oeic_dc\260413_cage40_die37\SPCM_MTK-die3-IDN9N480.00#1_C03_cage'1_die'1_25C_#1_D2_ch_10_9_-10dBm_SMU_pn_1_-1000mV.csv")
+#     wavelength = data['average_il'][:,0]*1E9
+#     loss = -data['average_il'][:,1]
+#     # sg_window = 81
+#     # polyorder = 3
+#     # loss = savgol_filter(loss, window_length=sg_window, polyorder=polyorder)
+#     # i = np.argmin(np.abs(wavelength-1308))
+#     # j = np.argmin(np.abs(wavelength-1320))
+#     # wavelength = wavelength[i:j]
+#     # loss = loss[i:j]
+
+#     plt.plot(wavelength, loss)
+# %%

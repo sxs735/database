@@ -86,7 +86,7 @@ pip install numpy scipy matplotlib pandas openpyxl tqdm
 | Table | Purpose |
 |-------|---------|
 | `DUT` | Unique wafer/DOE/die/cage/device combinations. |
-| `Measurement` | Logical measurement runs tied to a DUT; holds `measure_name`, operator, timestamp. |
+| `Measurement` | Logical measurement runs tied to a DUT; holds `measure_name`, operator, `measured_start`, `measured_end`. |
 | `MeasureSession` | Repeat counter (`session_idx`) under a measurement; referenced by raw data & analyses. |
 | `RawDataFiles` | Every imported file with type, relative path, record time. |
 | `OpticalInfo` / `ElectricInfo` / `AnotherInfo` | Per-file instrument configuration and free-form metadata. |
@@ -110,7 +110,10 @@ with DatabaseAPI("measurement_data.db") as db:
 
     # 2. Measurements by DUT and time window
     week_ago = datetime.now() - timedelta(days=7)
-    measurements = db.select_measurements(dut_id=duts[0]["DUT_id"], measured_at_start=week_ago)
+    measurements = db.select_measurements(
+        dut_id=duts[0]["DUT_id"],
+        measured_start_start=week_ago
+    )
 
     # 3. Session ids with fine-grained filters
     sessions = db.select_session(wafer="W12", measure_name="260310_RF_test1", session_idx=0)

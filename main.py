@@ -1,23 +1,23 @@
 #%%
 from pathlib import Path
+
+from matplotlib.pyplot import table
 from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
 db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
-#db_path = Path(r"R:\KF處理\SQLite") / "DataBase.db"
-#db_path = Path(r"C:\Users\mg942\Desktop\元澄\資料庫") / "DataBase 3.db"
 
 #%%
-folder = '260408_cage40_die37_-10dBm'
-folder_path = Path(r"D:\processing\資料庫整理") / folder
-#folder_path = Path(r"C:\Users\mg942\Desktop\元澄") / folder
-# Optional batch import step for freshly measured folders
-with DatabaseAPI(db_path) as db:
-    db.backup_database()
-    print(f'Importing folder: {folder}')
-    db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
-    #db.restore_database(create_backup=False)
+for folder in ['260507_MTK_06_2']:
+    #folder = '260410_A01_85C'
+    folder_path = Path(r"D:\Data\1_DataBase\processing") / folder
+    # Optional batch import step for freshly measured folders
+    with DatabaseAPI(db_path) as db:
+        db.backup_database()
+        print(f'Importing folder: {folder}')
+        db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
+        #db.restore_database(create_backup=False)
 #%%
 cage = 'cage40'
 measure_name = '260402_cage40_die37_0dBm'
@@ -65,8 +65,7 @@ with DatabaseAPI(db_path) as db:
     db.conn.commit()
 
 #%%
-#unfinished
-measure_name = '260408_cage40_die37_0dBm'
+measure_name = '260428_MTK_die35'
 print("Starting SSRF-MTK analysis...")
 print(f"measure_name: {measure_name}")
 with DatabaseAPI(db_path) as db:
@@ -76,15 +75,29 @@ with DatabaseAPI(db_path) as db:
     db.conn.commit()
 
 #%%
-# Export a full database snapshot for sharing/reporting
-with DatabaseAPI(db_path) as db:
-    
-    #output_path = db.export_all_tables_to_xlsx(db_path.parent / "database_export.xlsx")
-    measure_ids = db.select_measurements(measure_name = '260402_cage40_die37_0dBm')
-    for measure in measure_ids:
-        #data_ids = db._select_data_by_measure_id(measure['measure_id'])
-        db.delete_record('Measurement', measure['measure_id'])
-    db.remove_empty_dirs()
+for measure_name in ['260421_A04_85C_Cage1_8_13_htr1_DCIV',
+                     '260421_A04_85C_Cage1_8_13_htr2_DCIV',
+                     '260421_A04_85C_Cage1_8_13_SPCM',
+                     '260422_A04_25C',
+                     '260423_A04_85C',
+                     '260423_A04_85C_DetailSweep',
+                     '260424_A04_25C_DetailSweep']:
+    #measure_name = '260422_A04_25C'
+    with DatabaseAPI(db_path) as db:
+        measure_ids = db.select_measurements(measure_name = measure_name)
+        for measure in measure_ids:
+            db.delete_record('Measurement', measure['measure_id'])
+        db.remove_empty_dirs()
+#%%
+for measure_name in ['260407_A01_25C','260409_A02_25C','260409_A02_85C','260410_A01_85C',
+                     '260416_A01_25C','260417_A02_25C','260417_A05_25C','260420_A05_85C',
+                     '260422_A04_25C','260423_A04_85C','260423_A04_85C_DetailSweep','260424_A04_25C_DetailSweep',
+                     '260424_A04_25C_DetailSweep_IbiasIthr','260427_A04_85C_DetailSweep_IbiasIthr']:
+    #measure_name = '260422_A04_25C'
+    with DatabaseAPI(db_path) as db:
+        measure_ids = db.select_measurements(measure_name = measure_name)
+        for measure in measure_ids:
+            db.take_rawdata(measure['measure_id'])
     
 # %%
 folder = Path(r"D:\processing\資料庫整理\1.處理中\250927\exchange")
@@ -96,14 +109,29 @@ for file_path in files:
         print(f"Error processing file {file_path}: {e}")
 # %%
 with DatabaseAPI(db_path) as db:
-    #sessions = db.select_session(measure_name = measure_name, cage = cage)
-    sessions = db.select_session(measure_name = measure_name)#, cage = cage)
+    sessions = db.select_session(measure_name = '260417_A05_25C_Cage9_11')
+    for session in sessions:
+        dciv_info = db.select_rawdata_files(session['session_id'], data_type='DCIV')
+        for idx, info in enumerate(dciv_info):
+            dciv_data = read_dcvi(Path(db.db_path).parent / info['file_path'])
+            channel = dciv_data['channel']
+            voltage = dciv_data['measured voltage'][0]
+            current = dciv_data['measured current'][0]
+            resistance = voltage / current if current != 0 else np.inf
+
+            analysis_id = db.insert_analysis(session_id = session['session_id'],
+                                            analysis_type = 'resistance',
+                                            instance_no = idx,
+                                            algorithm = 'resistance',
+                                            version = '0.0.0',
+                                            commit=False)
+            db.insert_sources(analysis_id, info["data_id"], commit=False)
+            feature_id = db.insert_feature(analysis_id=analysis_id, feature_type='resistance', feature_idx=0, commit=False)
+            db.insert_metrics(feature_id, {'Resistance': (float(round(resistance, 3)), 'Ohm')}, commit=False)
+    db.conn.commit()
 # %%
-import matplotlib.pyplot as plt
-ssrf = r'D:\Data\1_DataBase\RawDataFiles\MTK-die3-IDN9N480.00#1\C03\cage40\D1\die37\260402_cage40_die37\#1\SSRF_MTK-die3-IDN9N480.00#1_C03_cage40_die37_25C_#1_D1_ch_11_11_-10dBm_SMU_pn_1_-1000mV_arg_1309.927.s2p'
-ssrf_data = read_ssrf(ssrf)
-frequency = np.real(ssrf_data[:,0])
-s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
-plt.plot(frequency, s21)
-plt.show()
+# %%
+with DatabaseAPI(db_path) as db:
+    for i in range(1,181):
+        db.delete_record("Analyses", record_id=i, commit = True)
 # %%
