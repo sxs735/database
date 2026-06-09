@@ -32,20 +32,6 @@ CREATE TABLE IF NOT EXISTS Measurement (
 CREATE INDEX IF NOT EXISTS idx_measure_dut ON Measurement (DUT_id);
 
 -- =========================
--- Conditions
--- =========================
-CREATE TABLE IF NOT EXISTS Conditions (
-    condition_id INTEGER PRIMARY KEY,
-    measure_id INTEGER NOT NULL,
-    setting_parameters TEXT NOT NULL,
-    setting_value TEXT NOT NULL,
-    parameters_unit TEXT,
-    FOREIGN KEY (measure_id) REFERENCES Measurement(measure_id) ON DELETE CASCADE,
-    UNIQUE (measure_id, setting_parameters, parameters_unit));
-
-CREATE INDEX IF NOT EXISTS idx_condition_measure ON Conditions (measure_id);
-
--- =========================
 -- MeasureSession
 -- =========================
 CREATE TABLE IF NOT EXISTS MeasureSession (
@@ -71,6 +57,20 @@ CREATE TABLE IF NOT EXISTS RawDataFiles (
     UNIQUE (session_id, file_name));
 
 CREATE INDEX IF NOT EXISTS idx_raw_session_type ON RawDataFiles (session_id, data_type);
+
+-- =========================
+-- Conditions
+-- =========================
+CREATE TABLE IF NOT EXISTS Conditions (
+    condition_id INTEGER PRIMARY KEY,
+    data_id INTEGER NOT NULL,
+    setting_parameters TEXT NOT NULL,
+    setting_value TEXT NOT NULL,
+    parameters_unit TEXT,
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE,
+    UNIQUE (data_id, setting_parameters, parameters_unit));
+
+CREATE INDEX IF NOT EXISTS idx_condition_data ON Conditions (data_id);
 
 -- =========================
 -- OpticalInfo

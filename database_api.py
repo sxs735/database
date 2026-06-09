@@ -1,7 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
+import os
 import re
 import shutil
 import sqlite3
+import time
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
@@ -259,12 +261,12 @@ class DatabaseAPI:
         return session_id
     
     # Conditions 表
-    def insert_conditions(self, measure_id: int, conditions: Dict[str, Any], commit: bool = True):
+    def insert_conditions(self, data_id: int, conditions: Dict[str, Any], commit: bool = True):
         """
         批量插入實驗條件
         
         Args:
-            measure_id: Measurement ID
+            data_id: RawDataFiles ID
             conditions: 條件字典 {'temperature': 25.0, 'voltage': 3.3, ...}
                        或包含單位的字典 {'temperature': (25.0, '°C'), 'voltage': (3.3, 'V'), ...}
         """
@@ -276,11 +278,11 @@ class DatabaseAPI:
                 value, unit = value_data, None
             
             self.conn.execute(f"""INSERT INTO {self.TABLE_CONDITIONS} 
-                              (measure_id, setting_parameters, setting_value, parameters_unit)
+                              (data_id, setting_parameters, setting_value, parameters_unit)
                               VALUES (?, ?, ?, ?)
-                              ON CONFLICT (measure_id, setting_parameters, parameters_unit) DO UPDATE SET
+                              ON CONFLICT (data_id, setting_parameters, parameters_unit) DO UPDATE SET
                               setting_value = excluded.setting_value""",
-                              (measure_id, key, value, unit))
+                              (data_id, key, value, unit))
         if commit:
             self.conn.commit()
     
@@ -656,9 +658,9 @@ class DatabaseAPI:
         return self.query(sql, tuple(params))
 
     # Conditions 查詢
-    def select_conditions(self, measure_id: int) -> List[Dict[str, Any]]:
+    def select_conditions(self, data_id: int) -> List[Dict[str, Any]]:
         """查詢特定會話的所有實驗條件"""
-        return self.query(f"SELECT * FROM {self.TABLE_CONDITIONS} WHERE measure_id = ?",(measure_id,))
+        return self.query(f"SELECT * FROM {self.TABLE_CONDITIONS} WHERE data_id = ?",(data_id,))
     
     # RawDataFiles 查詢
     def select_rawdata_files(self,
@@ -817,13 +819,14 @@ class DatabaseAPI:
 
     def remove_empty_dirs(self):
         root = Path(self.db_path).parent / self.RAW_DATA_FOLDER
-        # 由底層往上遍歷
-        for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-            if path.is_dir():
-                try:
-                    path.rmdir()  # 只能刪空資料夾
-                except OSError:
-                    pass  # 非空資料夾會丟錯，忽略
+        if not root.exists():
+            return
+        # 由底層往上遍歷，避免先全量 rglob + sorted 的高成本
+        for dirpath, _, _ in tqdm(os.walk(root, topdown=False), desc="Removing empty dirs", unit="dir"):
+            try:
+                Path(dirpath).rmdir()  # 只能刪空資料夾
+            except OSError:
+                pass  # 非空資料夾會丟錯，忽略
 
     def vacuum(self,
                into_path: Optional[Union[str, Path]] = None,
@@ -898,7 +901,7 @@ class DatabaseAPI:
             target_dir = target_root_path / 'processing' / folder
             target_dir.mkdir(parents=True, exist_ok=True)
             if datatype == 'SPCM':
-                (target_root_path / filepath).unlink()
+                #(target_root_path / filepath).unlink()
                 filepath = filepath.parent / filepath.name.replace("SPCMs", "SPCM")
             dst = target_dir / filepath.name
             move_path.append((target_root_path / filepath, dst))
@@ -1159,13 +1162,21 @@ class DatabaseAPI:
     def move_file(cls, src_dst):
         """Move a file unless the destination already exists."""
         src, dst = src_dst
-        if dst.exists():
-            return False
-        try:
-            src.rename(dst)  # 同磁碟機非常快
-        except OSError:
-            shutil.move(str(src), str(dst))  # 跨磁碟機降級
-        return True
+        for retry in range(3):
+            try:
+                if dst.exists():
+                    #return False
+                    dst.unlink()  # 覆寫既有檔案
+                try:
+                    src.rename(dst)  # 同磁碟機非常快
+                except OSError:
+                    shutil.move(str(src), str(dst))  # 跨磁碟機降級
+                return True
+            except Exception as e:
+                if retry == 2:
+                    return False
+                time.sleep(5)
+    
 
     @classmethod
     def copy_file(cls, src_dst):
@@ -1236,7 +1247,7 @@ class DatabaseAPI:
                                                      notes="",
                                                      commit=False)
                 
-                self.insert_conditions(measure_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
+                
 
                 session_id = self.insert_session(measure_id, session_idx, commit=False)
 
@@ -1267,6 +1278,8 @@ class DatabaseAPI:
                                                    file_path=str(relative_dst),
                                                    file_name=filepath.name,
                                                    commit=False)
+                
+                self.insert_conditions(data_id, {"temperature": (file_info["temperature"], "°C")}, commit=False)
 
                 # 儲存光學/電性設定與其它參數
                 self.insert_optical_info(data_id=data_id,
@@ -1307,7 +1320,14 @@ class DatabaseAPI:
             if self.conn:
                 self.conn.rollback()
             raise
+
         print(f"匯入資料庫完成")
+        if folder.is_dir():
+            try:
+                folder.rmdir()  # 只能刪空資料夾
+                print(f"刪除空資料夾: {folder}")
+            except OSError:
+                pass  # 非空資料夾會丟錯，忽略
  
     def MRM_SPCM_analysis_by_session(self,session_id,input_channel=None,output_channel=None,commit=True):
         spcm_info = self.select_rawdata_files(session_id,data_type='SPCM',
@@ -1471,15 +1491,19 @@ class DatabaseAPI:
             electric_info = self.select_electric(info['data_id'])[0]
             voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
             wavelength = float(self.select_another(info['data_id'])[0]['info_value'])
+            #loss = float(self.select_another(info['data_id'])[0]['info_value'][:-2])
             info['voltage'] = voltage
             info['wavelength'] = wavelength
+            #info['loss'] = loss
             info['input_power'] = input_powers
             if input_powers not in group:
                 group[input_powers] = {}
             if voltage not in group[input_powers]:
                 group[input_powers][voltage] = [wavelength]
+                #group[input_powers][voltage] = [loss]
             else:
                 group[input_powers][voltage] += [wavelength]
+                #group[input_powers][voltage] += [loss]
         for input_power in group:
             for voltage in group[input_power]:
                 group[input_power][voltage] = np.sort(group[input_power][voltage])
@@ -1495,6 +1519,7 @@ class DatabaseAPI:
                                                version = version,
                                                commit=False)
             idx = int(np.where(group[info['input_power']][info['voltage']] == info['wavelength'])[0][0])
+            #idx = int(np.where(group[info['input_power']][info['voltage']] == info['loss'])[0][0])
             self.insert_sources(analysis_id, info["data_id"], commit=False)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=idx, commit=False)
             self.insert_metrics(feature_id, result, commit=False)

@@ -1,18 +1,16 @@
 #%%
 from pathlib import Path
-
-from matplotlib.pyplot import table
 from database_api import DatabaseAPI
 from analysis import *
 from tqdm import tqdm
 
-db_path = Path(r"D:\Data\1_DataBase") / "DataBase.db"
+db_path = Path(r"X:\1_Database") / "DataBase.db"
+#local = Path(r"D:\Data\1_DataBase\processing")
+local = Path(r"X:\1_Database\processing")
 
 #%%
-for folder in ['260507_MTK_06_2']:
-    #folder = '260410_A01_85C'
-    folder_path = Path(r"D:\Data\1_DataBase\processing") / folder
-    # Optional batch import step for freshly measured folders
+for folder in ['260608_mCouple_test']:
+    folder_path = local / folder
     with DatabaseAPI(db_path) as db:
         db.backup_database()
         print(f'Importing folder: {folder}')
@@ -20,7 +18,7 @@ for folder in ['260507_MTK_06_2']:
         #db.restore_database(create_backup=False)
 #%%
 cage = 'cage40'
-measure_name = '260402_cage40_die37_0dBm'
+measure_name = '260430_MTK_die35'
 #%%
 print("Starting batch MRM_SPCM analysis...")
 print(f"Processing cage: {cage}, measure_name: {measure_name}")
@@ -65,29 +63,28 @@ with DatabaseAPI(db_path) as db:
     db.conn.commit()
 
 #%%
-measure_name = '260428_MTK_die35'
-print("Starting SSRF-MTK analysis...")
-print(f"measure_name: {measure_name}")
-with DatabaseAPI(db_path) as db:
-    sessions = db.select_session(measure_name = measure_name)#, cage = cage)
-    for session in tqdm(sessions, desc="Sessions"):
-         db.MRM_SSRF_MTK_analysis_by_session(session['session_id'],commit=False)
-    db.conn.commit()
+for measure_name in ['260601_AMD_MRM','260601_AMD_MRM_50ohm','260601_AMD_MRM_MPI','260601_MTK_MRM','260601_MTK_MRM_50ohm','260601_MTK_MRM_MPI']:
+    print("Starting SSRF-MTK analysis...")
+    print(f"measure_name: {measure_name}")
+    with DatabaseAPI(db_path) as db:
+        sessions = db.select_session(measure_name = measure_name)#, cage = cage)
+        for session in tqdm(sessions, desc="Sessions"):
+            db.MRM_SSRF_MTK_analysis_by_session(session['session_id'],commit=False)
+        db.conn.commit()
 
 #%%
-for measure_name in ['260421_A04_85C_Cage1_8_13_htr1_DCIV',
-                     '260421_A04_85C_Cage1_8_13_htr2_DCIV',
-                     '260421_A04_85C_Cage1_8_13_SPCM',
-                     '260422_A04_25C',
-                     '260423_A04_85C',
-                     '260423_A04_85C_DetailSweep',
-                     '260424_A04_25C_DetailSweep']:
-    #measure_name = '260422_A04_25C'
-    with DatabaseAPI(db_path) as db:
+with DatabaseAPI(db_path) as db:
+    #res = db.select_measurements()
+    #measure_name_list = list(set([measure['measure_name'] for measure in res]))
+    measure_name_list = ["260525_MTK_MUX_06"]
+    for measure_name in measure_name_list:
+        print(f"Processing measure_name: {measure_name}")
         measure_ids = db.select_measurements(measure_name = measure_name)
         for measure in measure_ids:
             db.delete_record('Measurement', measure['measure_id'])
-        db.remove_empty_dirs()
+#%%
+with DatabaseAPI(db_path) as db:
+    db.remove_empty_dirs()
 #%%
 for measure_name in ['260407_A01_25C','260409_A02_25C','260409_A02_85C','260410_A01_85C',
                      '260416_A01_25C','260417_A02_25C','260417_A05_25C','260420_A05_85C',
@@ -129,9 +126,9 @@ with DatabaseAPI(db_path) as db:
             feature_id = db.insert_feature(analysis_id=analysis_id, feature_type='resistance', feature_idx=0, commit=False)
             db.insert_metrics(feature_id, {'Resistance': (float(round(resistance, 3)), 'Ohm')}, commit=False)
     db.conn.commit()
-# %%
+
 # %%
 with DatabaseAPI(db_path) as db:
-    for i in range(1,181):
-        db.delete_record("Analyses", record_id=i, commit = True)
+    res = db.select_measurements()
+    measure_name_list = list(set([measure['measure_name'] for measure in res]))
 # %%
