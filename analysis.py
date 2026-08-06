@@ -1,6 +1,4 @@
-#%%
 import csv,re
-import matplotlib
 import numpy as np
 import inspect
 from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
@@ -41,39 +39,29 @@ def save_spectrum_lite(setting,data, path):
         header = ['wavelength(nm)']+ [f'DaqPort{port}' for port in setting['DaqPort']]
     save_to_csv(path, data, header=header)
 
-def read_spectrum(path,start_idx=None,end_idx=None):
+def read_spectrum_head(path):
     pattern = re.compile(r'^DaqPort(\d+)$')
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
-        setting = {'DaqPort': []}
-        data = []
+        header = {'DaqPort': [],'spcm_type': None}
         for i,row in enumerate(reader):
-            if start_idx is None and '=== Min' in row:
-                start_idx = i
-                setting['mode'] = 'min/max'
-            elif start_idx is None and '=== Average IL (TLS 0) ===' in row:
-                start_idx = i
-                setting['mode'] = 'average'
-            elif end_idx is None and '=== Mueller Row 1 (TLS 0) ==='in row:
+            if header['spcm_type'] is None and '=== Min' in row:
+                header['spcm_type'] = 'min/max'
                 break
-            elif start_idx is not None:
-                if i> start_idx:
-                    data += [[tofloat(value) for value in row]]
+            elif header['spcm_type'] is None and '=== Average IL (TLS 0) ===' in row:
+                header['spcm_type'] = 'average'
+                break
             elif ('WavelengthStart' in row 
                   or 'WavelengthStop' in row 
                   or 'WavelengthStep' in row 
-                  or 'SweepRate' in row):
-                setting[row[0]] = f'{row[1]}({row[2]})'
+                  or 'SweepRate' in row
+                  or 'TLSPower' in row
+                  or 'Attenuation Set' in row):
+                header[row[0]] = f'{row[1]}({row[2]})'
             elif match := pattern.match(row[0]):
-                setting['DaqPort'] += [match.group(1)]
+                header['DaqPort'] += [match.group(1)]
 
-        if start_idx is not None:
-            data = np.array(data, dtype=float)
-            data[:,0] *= 1E9
-        else:
-            print(path)
-            raise ValueError("Don't support this file format")
-    return setting, data
+    return header
 
 def read_spectrum_lite(path):
     with open(path, newline="", encoding="utf-8") as f:
@@ -91,7 +79,7 @@ def read_spectrum_all(path):
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         mode = None
-        header = []
+        header = {}
         Min_Max = []
         Mueller = []
         Avg = []
@@ -120,12 +108,36 @@ def read_spectrum_all(path):
             elif mode == 'te_tm':
                 TE_TM += [[tofloat(value) for value in row]]
             else:
-                header += [row]
-        data = {'min_max': np.array(Min_Max),
-                'average_il': np.array(Avg),
-                'mueller': np.array(Mueller),
-                'pdl': np.array(PDL),
-                'te_tm': np.array(TE_TM),
+                if len(row)==3 and len(row[2])>0:
+                    header[row[0]] = [row[1], row[2]]
+                elif len(row)==3 and len(row[2])==0:
+                    header[row[0]] = row[1]
+                elif len(row)==2 and len(row[1])>0:
+                    header[row[0]] = row[1]
+
+        Min_Max = np.array(Min_Max, dtype=float)
+        if Min_Max.size > 0:
+            Min_Max[:,0] *= 1E9
+            Min_Max[:,1:] *= -1
+        Avg = np.array(Avg, dtype=float)
+        if Avg.size > 0:
+            Avg[:,0] *= 1E9
+            Avg[:,1:] *= -1
+        Mueller = np.array(Mueller, dtype=float)
+        if Mueller.size > 0:
+            Mueller[:,0] *= 1E9
+        PDL = np.array(PDL, dtype=float)
+        if PDL.size > 0:
+            PDL[:,0] *= 1E9
+        TE_TM = np.array(TE_TM, dtype=float)
+        if TE_TM.size > 0:
+            TE_TM[:,0] *= 1E9
+            TE_TM[:,1:] *= -1
+        data = {'min_max': Min_Max,
+                'average_il': Avg,
+                'mueller': Mueller,
+                'pdl': PDL,
+                'te_tm': TE_TM,
                 'header': header}
     return data
 
@@ -169,57 +181,47 @@ def exchange_2ports(file_path):
         writer = csv.writer(f)
         writer.writerows(new_csv)
 
-def read_ssrf(path):
-    """
-    讀取 SSRF (S-parameter) 數據文件
-    
-    Parameters:
-    -----------
-    path : str or Path
-        文件路徑
-    
-    Returns:
-    --------
-    head : dict
-        標頭資訊字典
-    data : ndarray
-        數據陣列，包含 [freq(GHz), s11, s21, s12, s22]
-    """
-    
-    with open(path, newline="", encoding="utf-8") as f:
+def read_ssrf(filepath):
+    with open(filepath, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
-        head = {}
         data = []
         in_header = True
-        
+        header = []
+            
         for i, row in enumerate(reader):
             if not row or not row[0]:  # 跳過空行
                 continue
-            # 檢查是否為標頭行
+                # 檢查是否為標頭行
             if '#' in row[0] and in_header:
                 in_header = False  # 標頭結束
+                header = row[0]
                 continue
             elif not in_header:
                 row_data = row[0].split()
-                data.append([tofloat(v) for v in row_data])
-        
+                data.append([float(v) for v in row_data])
+            
         data = np.array(data)
-        
+            
         # 確保數據形狀正確
         if data.shape[1] < 9:
             raise ValueError(f"數據列數不足，期望至少 9 列，實際 {data.shape[1]} 列")
-        
+            
         # 提取頻率和 S 參數
         freq = data[:, 0] / 1e9  # 轉換為 GHz
         s11 = data[:, 1] + 1j * data[:, 2]
         s21 = data[:, 3] + 1j * data[:, 4]
         s12 = data[:, 5] + 1j * data[:, 6]
         s22 = data[:, 7] + 1j * data[:, 8]
-        
+            
         # 組合成輸出格式（使用 complex128 類型）
-        result = np.column_stack([freq, s11, s21, s12, s22])
+    ssrf_data = np.column_stack([freq, s11, s21, s12, s22])
+    frequency = np.real(ssrf_data[:,0])
+    #s11_dB = 20*np.log10(np.abs(ssrf_data[:,1]))
+    #s21_dB = 20*np.log10(np.abs(ssrf_data[:,2]))
+    #s12_dB = 20*np.log10(np.abs(ssrf_data[:,3]))
+    #s22_dB = 20*np.log10(np.abs(ssrf_data[:,4]))
     
-    return result
+    return  header,frequency,s11, s21, s12, s22
 
 def read_dcvi(path):
     with open(path, newline="", encoding="utf-8") as f:
@@ -471,6 +473,18 @@ def Get_loss_at_wavelength(spcm, target_wavelength):
             inspect.currentframe().f_code.co_name, 
             version)
 
+def SPCM_variation_analysis(spcm, target_wavelength):
+    version = "1.0.0"
+    wavelength = spcm[:, 0]
+    loss = spcm[:, 1]
+    idx = np.argmin(np.abs(wavelength - target_wavelength))
+    target_loss = loss[idx]
+    variation = loss - target_loss
+    result = {'Wavelength': (float(round(wavelength[idx],3)), 'nm'),
+              'Loss Variation': (variation.tolist(), 'dB')}
+    return (result,
+            inspect.currentframe().f_code.co_name, 
+            version)
 
 def CRR_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order=3):
     """
@@ -560,20 +574,53 @@ def CRR_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order
             inspect.currentframe().f_code.co_name, 
             version)
 
-#%%
-# import matplotlib.pyplot as plt
-# %matplotlib qt5
-# if __name__ == "__main__":
-#     data = read_spectrum_all(r"\\DESKTOP-GETONC5\oeic_dc\260413_cage40_die37\SPCM_MTK-die3-IDN9N480.00#1_C03_cage'1_die'1_25C_#1_D2_ch_10_9_-10dBm_SMU_pn_1_-1000mV.csv")
-#     wavelength = data['average_il'][:,0]*1E9
-#     loss = -data['average_il'][:,1]
-#     # sg_window = 81
-#     # polyorder = 3
-#     # loss = savgol_filter(loss, window_length=sg_window, polyorder=polyorder)
-#     # i = np.argmin(np.abs(wavelength-1308))
-#     # j = np.argmin(np.abs(wavelength-1320))
-#     # wavelength = wavelength[i:j]
-#     # loss = loss[i:j]
+def SSRF_S11_impedance(frequency,s11):
+    """依據 S21 曲線估算小信號頻寬。
 
-#     plt.plot(wavelength, loss)
-# %%
+    Parameters
+    ----------
+    ssrf_data : array-like
+        SSRF 數據，包含頻率和 S 參數。
+
+    Returns
+    -------
+    tuple
+        (結果字典, 函式名稱, 版本)。
+    """
+    version = "1.0.0"
+    rs = 50*(1+s11[0])/(1-s11[0])
+    re = 50*(1+s11[-1])/(1-s11[-1])
+    # start = frequency[0],np.real(rs),np.imag(rs)
+    # end = frequency[-1],np.real(re),np.imag(re)
+    resistance_start = np.round(np.real(rs), 4)
+    reactance_start = np.round(np.imag(rs), 4)
+    resistance_end = np.round(np.real(re), 4)
+    reactance_end = np.round(np.imag(re), 4)
+
+    result = {'Resistance_start': (resistance_start, 'Ohm'),
+              'Reactance_start': (reactance_start, 'Ohm'),
+              'Resistance_end': (resistance_end, 'Ohm'),
+              'Reactance_end': (reactance_end, 'Ohm')}
+
+    return (result,
+            inspect.currentframe().f_code.co_name,
+            version)
+
+def SSRF_S11_valley(frequency, s11):
+    version = "1.0.0"
+    s11_dB = 20*np.log10(np.abs(s11))
+    #find s11_db valley position
+    sg_smooth = savgol_filter(s11_dB, len(frequency)//30, 3)
+    valley_idx, _ = find_peaks(-sg_smooth, prominence=0.1, distance=5)
+    pos = frequency[valley_idx]
+    dB = s11_dB[valley_idx]
+    result = {'valley_count': len(valley_idx),
+              **{f'valley{i}_frq': value for i, value in enumerate(pos)},
+              **{f'valley{i}': value for i, value in enumerate(dB)}}
+    return (result,
+            inspect.currentframe().f_code.co_name,
+            version)
+
+if __name__ == "__main__":
+    pass
+

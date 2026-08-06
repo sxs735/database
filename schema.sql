@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS OpticalInfo (
     input_channel TEXT NOT NULL,
     output_channel TEXT NOT NULL,
     input_power TEXT NOT NULL,
+    tls_power TEXT,
+    attenuation TEXT,
     wavelengthStart TEXT,
     wavelengthStop TEXT,
     sweepRate TEXT,

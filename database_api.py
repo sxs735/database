@@ -40,7 +40,7 @@ class DatabaseAPI:
                               _(?P<device>[^_]+)
                               _ch_(?P<ch_in>\d+)
                               _(?P<ch_out>\d+)
-                              _(?P<power>-?\d+)dBm
+                              _(?P<power>[^_]+)dBm
                               (?P<rest>.*)
                               \.(?:csv|txt|s2p)$""",
                               re.VERBOSE)
@@ -140,7 +140,7 @@ class DatabaseAPI:
         # 執行 schema
         self.conn.executescript(schema_sql)
         self.conn.commit()
-        print(f"資料庫已創建: {self.db_path}")
+        print(f"資料庫: {self.db_path}")
         
     def reset_db(self, schema_file: str = "schema.sql"):
         """
@@ -331,23 +331,27 @@ class DatabaseAPI:
                             input_channel: str,
                             output_channel: str,
                             input_power: str,
+                            tls_power: str,
+                            attenuation: str,
                             wavelength_start: str,
                             wavelength_stop: str,
                             sweep_rate: str,
                             commit: bool = True) -> None:
         """插入或更新 OpticalInfo（單筆資料對應一行）。"""
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_OPTICAL_INFO}
-                                   (data_id, input_channel, output_channel, input_power, wavelengthStart, wavelengthStop, sweepRate)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   (data_id, input_channel, output_channel, input_power, tls_power, attenuation, wavelengthStart, wavelengthStop, sweepRate)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                    ON CONFLICT(data_id) DO UPDATE SET
                                    input_channel = excluded.input_channel,
                                    output_channel = excluded.output_channel,
                                    input_power = excluded.input_power,
+                                   tls_power = excluded.tls_power,
+                                   attenuation = excluded.attenuation,
                                    wavelengthStart = excluded.wavelengthStart,
                                    wavelengthStop = excluded.wavelengthStop,
                                    sweepRate = excluded.sweepRate
                                    RETURNING data_id""",
-                                   (data_id, input_channel, output_channel, input_power, wavelength_start, wavelength_stop, sweep_rate))
+                                   (data_id, input_channel, output_channel, input_power, tls_power, attenuation, wavelength_start, wavelength_stop, sweep_rate))
         data_id = cursor.fetchone()["data_id"]
         if commit:
             self.conn.commit()
@@ -552,6 +556,17 @@ class DatabaseAPI:
         sql += " ORDER BY DUT_id"
         return self.query(sql, tuple(params))
 
+    def select_unused_duts(self) -> List[Dict[str, Any]]:
+        """查詢資料庫中未被任何 Measurement 使用的 DUT。"""
+        sql = f"""
+            SELECT d.*
+            FROM {self.TABLE_DUT} d
+            LEFT JOIN {self.TABLE_MEASUREMENTS} m ON d.DUT_id = m.DUT_id
+            WHERE m.measure_id IS NULL
+            ORDER BY d.DUT_id
+        """
+        return self.query(sql)
+
     # Measurement 查詢
     def select_measurements(self,
                             dut_id: Optional[int] = None,
@@ -718,7 +733,7 @@ class DatabaseAPI:
                     r[f] = []
         return rows
 
-    def _select_data_by_dut_id(self, dut_id: int):
+    def select_data_by_dut_id(self, dut_id: int):
         sql = f"""SELECT r.data_id, r.file_path
                   FROM {self.TABLE_DATA} r
                   JOIN MeasureSession s
@@ -729,7 +744,7 @@ class DatabaseAPI:
                   ORDER BY r.data_id"""
         return self.query(sql, (dut_id,))
     
-    def _select_data_by_measure_id(self, measure_id: int):
+    def select_data_by_measure_id(self, measure_id: int):
         sql = f"""SELECT r.data_id, r.file_path, r.data_type
                   FROM {self.TABLE_DATA} r
                   JOIN MeasureSession s
@@ -753,9 +768,46 @@ class DatabaseAPI:
         return self.query(f"SELECT * FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?", (data_id,))
 
     # Analyses 查詢
+    def select_analyses(self,measure_name: str,feature_type: str) -> List[Dict[str, Any]]:
+        """依 measure_name 與 feature_type 查詢對應的 analysis_id。"""
+        sql = f"""SELECT DISTINCT a.analysis_id
+                            FROM {self.TABLE_ANALYSES} a
+                            JOIN {self.TABLE_MEASURE_SESSIONS} ms ON a.session_id = ms.session_id
+                            JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
+                            JOIN {self.TABLE_FEATURES} f ON a.analysis_id = f.analysis_id
+                            WHERE m.measure_name = ?
+                                AND f.feature_type = ?
+                            ORDER BY a.analysis_id"""
+        return self.query(sql, (measure_name, feature_type))
+        
     # AnalysisSources 查詢
+    def select_analysis_sources(self, analysis_id: int) -> List[Dict[str, Any]]:
+        """查詢特定分析的所有來源數據。"""
+        sql = f"""SELECT src.data_id
+                  FROM {self.TABLE_ANALYSIS_SOURCES} src
+                  WHERE src.analysis_id = ?
+                  ORDER BY src.data_id"""
+        return self.query(sql, (analysis_id,))
     # Features 查詢
     # FeatureMetrics 查詢
+    def select_featuremetrics(self,
+                              session_id: int,
+                              feature_idx: int,
+                              metric_key: str) -> List[Dict[str, Any]]:
+        """依 session_id、feature_idx、metric_key 查詢 metric_value、metric_unit 與對應 data_id（不篩選 feature_type）。"""
+
+        sql = f"""SELECT src.data_id,
+                                            fm.metric_value,
+                                            fm.metric_unit
+                            FROM {self.TABLE_METRICS} fm
+                            JOIN {self.TABLE_FEATURES} f ON fm.feature_id = f.feature_id
+                            JOIN {self.TABLE_ANALYSES} a ON f.analysis_id = a.analysis_id
+                            JOIN {self.TABLE_ANALYSIS_SOURCES} src ON src.analysis_id = a.analysis_id
+                            WHERE a.session_id = ?
+                                AND f.feature_idx = ?
+                                AND fm.metric_key = ?
+                            ORDER BY a.analysis_id, src.data_id, fm.metric_id"""
+        return self.query(sql, (session_id, feature_idx, metric_key))
 
     # =========================
     # 4. 刪除資料 (DELETE)
@@ -778,36 +830,24 @@ class DatabaseAPI:
         
         move_path = []
         if table == self.TABLE_DUT:
-            rawdata = self._select_data_by_dut_id(record_id)
+            rawdata = self.select_data_by_dut_id(record_id)
         elif table == self.TABLE_MEASUREMENTS:
-            rawdata = self._select_data_by_measure_id(record_id)
+            rawdata = self.select_data_by_measure_id(record_id)
         else:
             rawdata = []
         
-        #move raw data files to Redo folder before deletion
+        #move raw data files to processing folder before deletion
         for raw in rawdata:
             filepath = Path(raw["file_path"])
-            datatype = raw['data_type']
-            folder = filepath.parts[-3]
+            folder = filepath.parts[-2]
             target_root_path = Path(self.db_path).parent
             target_dir = target_root_path / 'processing' / folder
             target_dir.mkdir(parents=True, exist_ok=True)
-            if datatype == 'SPCM':
-                try:
-                    (target_root_path / filepath).unlink()
-                except FileNotFoundError:
-                    pass
-                filepath = filepath.parent / filepath.name.replace("SPCMs", "SPCM")
             dst = target_dir / filepath.name
             move_path.append((target_root_path / filepath, dst))
         if move_path:
-            # for src_dst in move_path:
-            #     #self.move_file(src_dst)
             with ThreadPoolExecutor() as executor:
-                list(tqdm(executor.map(self.move_file, move_path), 
-                        total=len(move_path), 
-                        desc="Moving", 
-                        unit="file"))
+                list(executor.map(self.move_file, move_path))
         
         id_column = TABLE_ID_MAP[table]
         query = f"DELETE FROM {table} WHERE {id_column} = ?"
@@ -816,7 +856,6 @@ class DatabaseAPI:
             self.conn.commit()
         return cursor.rowcount
     
-
     def remove_empty_dirs(self):
         root = Path(self.db_path).parent / self.RAW_DATA_FOLDER
         if not root.exists():
@@ -888,30 +927,6 @@ class DatabaseAPI:
     # =========================
     # 輔助方法
     # =========================
-    def take_rawdata(self, measure_id: int):
-        move_path = []
-        rawdata = self._select_data_by_measure_id(measure_id)
-        
-        #move raw data files to Redo folder before deletion
-        for raw in rawdata:
-            filepath = Path(raw["file_path"])
-            datatype = raw['data_type']
-            folder = filepath.parts[-3]
-            target_root_path = Path(self.db_path).parent
-            target_dir = target_root_path / 'processing' / folder
-            target_dir.mkdir(parents=True, exist_ok=True)
-            if datatype == 'SPCM':
-                #(target_root_path / filepath).unlink()
-                filepath = filepath.parent / filepath.name.replace("SPCMs", "SPCM")
-            dst = target_dir / filepath.name
-            move_path.append((target_root_path / filepath, dst))
-        if move_path:
-            with ThreadPoolExecutor() as executor:
-                list(tqdm(executor.map(self.copy_file, move_path), 
-                        total=len(move_path), 
-                        desc="Copying", 
-                        unit="file"))
-        return None
 
     def add_column(self,
                    table_name: str,
@@ -940,32 +955,6 @@ class DatabaseAPI:
         if commit:
             self.conn.commit()
         return True
-
-    def export_all_tables_to_xlsx(self, output_path: str = "database_export.xlsx") -> str:
-        """
-        將整個資料庫所有表輸出成 xlsx 檔案
-
-        Args:
-            output_path: 輸出檔案路徑
-
-        Returns:
-            輸出檔案路徑
-        """
-        try:
-            import pandas as pd
-        except ImportError as exc:
-            raise ImportError("需要安裝 pandas 與 openpyxl：pip install pandas openpyxl") from exc
-
-        tables = self.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            for row in tables:
-                table_name = row['name']
-                df = pd.read_sql_query(f"SELECT * FROM {table_name}", self.conn)
-                sheet_name = table_name[:31]
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-        return output_path
 
     def backup_database(self,
                         backup_path: Optional[Union[str, Path]] = None) -> Path:
@@ -1135,6 +1124,16 @@ class DatabaseAPI:
         return valid_files, invalid_files,min(birthtime),max(birthtime)
 
     @classmethod
+    def read_note(cls,folder_path: str) -> Optional[str]:
+        """讀取資料夾內的 note.txt 檔案內容，若不存在則回傳 None。"""
+        folder = Path(folder_path)
+        note_file = folder / "note.txt"
+        if note_file.exists() and note_file.is_file():
+            with open(note_file, "r", encoding="utf-8") as f:
+                return f.read(), note_file
+        return '',None
+
+    @classmethod
     def test_filename_parsing(cls,filename):
         patterns = [("datatype", r"^[^_]+"),
                     ("wafer", r"_[^_]+"),
@@ -1160,34 +1159,27 @@ class DatabaseAPI:
 
     @classmethod
     def move_file(cls, src_dst):
-        """Move a file unless the destination already exists."""
+        """Move file with faster same-volume replace and cross-volume fallback."""
         src, dst = src_dst
-        for retry in range(3):
+        src = Path(src)
+        dst = Path(dst)
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
             try:
+                # Same volume: atomic replace is usually faster than unlink + move
+                os.rename(src, dst)
+            except OSError:
+                # Cross volume: fallback to shutil.move
                 if dst.exists():
-                    #return False
-                    dst.unlink()  # 覆寫既有檔案
-                try:
-                    src.rename(dst)  # 同磁碟機非常快
-                except OSError:
-                    shutil.move(str(src), str(dst))  # 跨磁碟機降級
-                return True
-            except Exception as e:
-                if retry == 2:
-                    return False
-                time.sleep(5)
-    
-
-    @classmethod
-    def copy_file(cls, src_dst):
-        """Copy a file to destination; uses copy2 to preserve metadata."""
-        src, dst = src_dst
-        if dst.exists():
+                    dst.unlink()
+                shutil.move(str(src), str(dst))
+            return True
+        except Exception:
             return False
-        shutil.copy2(src, dst)
-        return True
-
-    def import_from_measurement_folder(self, folder_path, schema_file="schema.sql"):
+    
+    def import_from_measurement_folder(self,
+                                       folder_path,
+                                       schema_file="schema.sql"):
         """批次匯入資料夾中的測量檔案並寫入資料庫與 RawDataFiles 目錄。
 
         Args:
@@ -1199,9 +1191,12 @@ class DatabaseAPI:
         """
 
         folder = Path(folder_path)
+        session_name = folder.name
         # 解析輸入資料夾，將符合命名規範的檔案與不合規檔案分開
         valid_files, invalid_files, start_timestamp, end_timestamp = self.parse_folder(folder)
         target_root_path = Path(self.db_path).parent / self.RAW_DATA_FOLDER
+        target_dir = (target_root_path / session_name)
+        notice, note_file = self.read_note(folder)
 
         try:
             # 若資料庫不存在則依 schema 初始化（已存在會拋例外並忽略）
@@ -1209,23 +1204,23 @@ class DatabaseAPI:
         except Exception:
             pass
 
-        #tested_timestamp = folder.stat().st_birthtime
-        move_path = []
+        move_path = [(note_file, target_dir / note_file.name)] if note_file else []
         try:
             # 使用交易確保整批匯入的原子性
             self.conn.execute("BEGIN")
-            for filepath, file_info_raw in tqdm(valid_files.items(), desc="Importing", unit="file"):
+            indexed_iter = enumerate(valid_files.items(), start=1)
+
+            for idx, (filepath, file_info_raw) in indexed_iter:
                 file_info = dict(file_info_raw)
-                session_name = folder.name
-                repeat_folder = r"#" + file_info["repeat"]
                 session_idx = int(file_info["repeat"])
+                #repeat_folder = r"#" + file_info["repeat"]
                 # 依檔名資訊建立資料儲存層級，確保相同結構下存放原始檔
-                target_dir = (target_root_path/ 
-                              file_info["wafer"]/ 
-                              file_info["doe"]/ 
-                              file_info["cage"]/
-                              file_info["device"]/
-                              f"die{file_info['die']}"/ session_name/ repeat_folder)
+                # target_dir = (target_root_path/ 
+                #               file_info["wafer"]/ 
+                #               file_info["doe"]/ 
+                #               file_info["cage"]/
+                #               file_info["device"]/
+                #               f"die{file_info['die']}"/ session_name/ repeat_folder)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dst = target_dir / filepath.name
                 relative_dst = dst.relative_to(target_root_path.parent)
@@ -1244,7 +1239,7 @@ class DatabaseAPI:
                                                      system="CM300v1.0",
                                                      measured_start=start_timestamp,
                                                      measured_end=end_timestamp,
-                                                     notes="",
+                                                     notes=notice,
                                                      commit=False)
                 
                 
@@ -1257,17 +1252,19 @@ class DatabaseAPI:
                 wavelength_start=None
                 wavelength_stop=None
                 sweep_rate=None
+                tls_power=None
+                attenuation=None
 
                 if file_info["datatype"] in ["SPCM"]:
-                    # SPCM 需要先解析內容以取得光學設定，同時另存壓縮版
-                    setting, data = read_spectrum(filepath)
-                    wavelength_start=setting["WavelengthStart"]
-                    wavelength_stop=setting["WavelengthStop"]
-                    sweep_rate=setting["SweepRate"]
+                    # SPCM 需要先解析內容以取得光學設定
+                    header = read_spectrum_head(filepath)
+                    wavelength_start=header["WavelengthStart"]
+                    wavelength_stop=header["WavelengthStop"]
+                    sweep_rate=header["SweepRate"]
+                    tls_power = header.get("TLSPower")
+                    attenuation = header.get("Attenuation Set",'NA')
 
                     move_path.append((filepath, dst))
-                    filepath = filepath.parent / filepath.name.replace("SPCM", "SPCMs")
-                    save_spectrum_lite(setting, data, filepath)
                     dst = target_dir / filepath.name
                     relative_dst = dst.relative_to(target_root_path.parent)
 
@@ -1286,6 +1283,8 @@ class DatabaseAPI:
                                          input_channel=file_info["ch_in"],
                                          output_channel=file_info["ch_out"],
                                          input_power=f"{file_info['power']} dBm",
+                                         tls_power=tls_power,
+                                         attenuation=attenuation,
                                          wavelength_start=wavelength_start,
                                          wavelength_stop=wavelength_stop,
                                          sweep_rate=sweep_rate,
@@ -1306,16 +1305,11 @@ class DatabaseAPI:
 
                 move_path.append((filepath, dst))
             self.conn.commit()
-            # 交易完成後移動或複製檔案，避免 I/O 影響 DB 寫入
-            with ThreadPoolExecutor() as executor:
-                list(tqdm(executor.map(self.move_file, move_path), 
-                        total=len(move_path), 
-                        desc="Moving", 
-                        unit="file"))
-                # list(tqdm(executor.map(self.copy_file, move_path), 
-                #         total=len(move_path), 
-                #         desc="copying", 
-                #         unit="file"))
+            if move_path:
+                with ThreadPoolExecutor() as executor:
+                    list(executor.map(self.move_file, move_path))
+
+
         except Exception:
             if self.conn:
                 self.conn.rollback()
@@ -1335,24 +1329,25 @@ class DatabaseAPI:
                                               optical_output_channel= output_channel)
         for instance_no, info in enumerate(spcm_info):
             filepath = Path(self.db_path).parent / info['file_path']
-            head, data = read_spectrum_lite(filepath)
-            x = data[:, 0]
-            col = 3 if data.shape[1] == 5 else 2
-            y = data[:, col] - data[:, 1]
+            spcm = read_spectrum_all(filepath)
+            spcm = spcm['min_max'] if spcm['min_max'].size > 0 else spcm['average_il']
+            x = spcm[:, 0]
+            col = 3 if spcm.shape[1] == 5 else 2
+            y = spcm[:, col] - spcm[:, 1]
             result, algorithm_name, version = MRM_SPCM_analysis(x, y,prominence=2.5)
             analysis_id = self.insert_analysis(session_id = session_id,
-                                               analysis_type = 'MRM_SPCM_analysis',
-                                               instance_no = instance_no,
-                                               algorithm = algorithm_name,
-                                               version = version,
-                                               commit=commit)
+                                            analysis_type = 'MRM_SPCM_analysis',
+                                            instance_no = instance_no,
+                                            algorithm = algorithm_name,
+                                            version = version,
+                                            commit=commit)
             self.insert_sources(analysis_id, info["data_id"], commit=commit)
             for i in range(len(result['Valley Wavelength'][0])):
                 feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='Basic parameters', feature_idx=i, commit=commit)
                 result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
                 self.insert_metrics(feature_id, result_idx, commit=commit)
 
-    def MRM_OMA_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
+    def __MRM_OMA_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
         spcm_info = self.select_rawdata_files(session_id,data_type='SPCM')
         modulated_spcm = {}
         for data in spcm_info:
@@ -1391,7 +1386,7 @@ class DatabaseAPI:
             result = {key:(result[key][0],result[key][1]) for key in result}
             self.insert_metrics(feature_id, result, commit=commit)
 
-    def MRM_tuning_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
+    def __MRM_tuning_analysis_by_session(self,session_id,start=1305, end=1315,commit=True):
         spcm_info = self.select_rawdata_files(session_id,data_type='SPCM')
         dciv_info = self.select_rawdata_files(session_id, data_type='DCIV')
         
@@ -1442,31 +1437,7 @@ class DatabaseAPI:
             result = {key:(result[key][0],result[key][1]) for key in result}
             self.insert_metrics(feature_id, result, commit=commit)
 
-    def MRM_SSRF_analysis_by_session(self,session_id,commit=True):
-        ssrf_info = self.select_rawdata_files(session_id, data_type='SSRF')
-        input_powers = []
-        for data in ssrf_info:
-            input_powers += [float(self.select_optical(data['data_id'])['input_power']
-                                   .replace(' dBm', ''))]
-        sorted_index = np.argsort(input_powers)
-        for no,idx in enumerate(sorted_index):
-            #print(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
-            ssrf_data = read_ssrf(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
-            frequency = np.real(ssrf_data[:,0])
-            s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
-            result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
-            
-            analysis_id = self.insert_analysis(session_id = session_id,
-                                               analysis_type = 'MRM_SSRF_analysis',
-                                               instance_no = no,
-                                               algorithm = algorithm_name,
-                                               version = version,
-                                               commit=commit)
-            self.insert_sources(analysis_id, ssrf_info[idx]["data_id"], commit=commit)
-            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=0, commit=commit)
-            self.insert_metrics(feature_id, result, commit=commit)
-
-    def Loss_analysis_by_session(self,session_id,target_wavelength=1310,commit=True):
+    def __Loss_analysis_by_session(self,session_id,target_wavelength=1310,commit=True):
         spcm_info = self.select_rawdata_files(session_id, data_type='SPCM')
         for idx,info in enumerate(spcm_info):
             filepath = Path(self.db_path).parent / info['file_path']
@@ -1483,7 +1454,7 @@ class DatabaseAPI:
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SPCM parameters', feature_idx=0, commit=commit)
             self.insert_metrics(feature_id, result, commit=commit)
 
-    def MRM_SSRF_MTK_analysis_by_session(self,session_id,commit=True):
+    def SSRF_analysis_by_session(self,session_id,commit=True):
         ssrf_info = self.select_rawdata_files(session_id, data_type='SSRF')
         group = {}
         for info in ssrf_info:
@@ -1491,26 +1462,22 @@ class DatabaseAPI:
             electric_info = self.select_electric(info['data_id'])[0]
             voltage = float(re.search(r'-?\d+\.?\d*', electric_info['set_value']).group())/1000
             wavelength = float(self.select_another(info['data_id'])[0]['info_value'])
-            #loss = float(self.select_another(info['data_id'])[0]['info_value'][:-2])
             info['voltage'] = voltage
             info['wavelength'] = wavelength
-            #info['loss'] = loss
             info['input_power'] = input_powers
             if input_powers not in group:
                 group[input_powers] = {}
             if voltage not in group[input_powers]:
                 group[input_powers][voltage] = [wavelength]
-                #group[input_powers][voltage] = [loss]
             else:
                 group[input_powers][voltage] += [wavelength]
-                #group[input_powers][voltage] += [loss]
         for input_power in group:
             for voltage in group[input_power]:
                 group[input_power][voltage] = np.sort(group[input_power][voltage])
         for no, info in enumerate(ssrf_info):
-            ssrf_data = read_ssrf(Path(self.db_path).parent / info['file_path'])
-            frequency = np.real(ssrf_data[:,0])
-            s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
+            header,frequency,s11, s21, s12, s22 = read_ssrf(Path(self.db_path).parent / info['file_path'])
+            frequency = np.real(frequency)
+            s21 = 20*np.log10(np.abs(s21))
             result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
             analysis_id = self.insert_analysis(session_id = session_id,
                                                analysis_type = 'MRM_SSRF-MTK',
@@ -1519,26 +1486,68 @@ class DatabaseAPI:
                                                version = version,
                                                commit=False)
             idx = int(np.where(group[info['input_power']][info['voltage']] == info['wavelength'])[0][0])
-            #idx = int(np.where(group[info['input_power']][info['voltage']] == info['loss'])[0][0])
+
             self.insert_sources(analysis_id, info["data_id"], commit=False)
             feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=idx, commit=False)
             self.insert_metrics(feature_id, result, commit=False)
 
-    # def DCIV_by_session(self,session_id,commit=True):
-    #     dciv_info = self.select_rawdata_files(session_id, data_type='DCIV')
-    #     for no,idx in enumerate(sorted_index):
-    #         #print(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
-    #         ssrf_data = read_ssrf(Path(self.db_path).parent / ssrf_info[idx]['file_path'])
-    #         frequency = np.real(ssrf_data[:,0])
-    #         s21 = 20*np.log10(np.abs(ssrf_data[:,2]))
-    #         result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
+
+            result, algorithm_name, version = SSRF_S11_impedance(frequency,s11)
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                                analysis_type = 'S11 impedance',
+                                                instance_no = no,
+                                                algorithm = algorithm_name,
+                                                version = version,
+                                                commit=commit)
+            self.insert_sources(analysis_id, info["data_id"], commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='S11 impedance', feature_idx=idx, commit=commit)
+            self.insert_metrics(feature_id, result, commit=commit)
+
+
+            result, algorithm_name, version = SSRF_S11_valley(frequency,s11)
+            analysis_id = self.insert_analysis(session_id = session_id,
+                                            analysis_type = 'S11 valley',
+                                            instance_no = no,
+                                            algorithm = algorithm_name,
+                                            version = version,
+                                            commit=commit)
+            self.insert_sources(analysis_id, info["data_id"], commit=commit)
+
+            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='S11 valley', feature_idx=idx, commit=commit)
+            self.insert_metrics(feature_id, result, commit=commit)
             
-    #         analysis_id = self.insert_analysis(session_id = session_id,
-    #                                         analysis_type = 'MRM_SSRF_analysis',
-    #                                         instance_no = no,
-    #                                         algorithm = algorithm_name,
-    #                                         version = version,
-    #                                         commit=commit)
-    #         self.insert_sources(analysis_id, ssrf_info[idx]["data_id"], commit=commit)
-    #         feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=0, commit=commit)
-    #         self.insert_metrics(feature_id, result, commit=commit)
+    def __Variation_analysis_by_session(self,session_id,commit=True):
+        spcm_info = self.select_rawdata_files(session_id, data_type='SPCM')
+        if len(spcm_info) < 2:
+            print("SPCM資料不足，無法進行Variation分析。")
+            return
+        spectra = []
+        for info in spcm_info:
+            filepath = Path(self.db_path).parent / info['file_path']
+            head, data = read_spectrum_lite(filepath)
+            spectra.append(data[:,1])  # 假設第二欄是光譜強度
+        spectra = np.array(spectra)
+        mean_spectrum = np.mean(spectra, axis=0)
+        variation = np.std(spectra, axis=0) / (mean_spectrum + 1e-9)  # 避免除以零
+        result = {"Wavelength": (head["WavelengthStart"] + head["WavelengthStop"])/2, "Variation": (variation.tolist(), "relative")}
+        
+        analysis_id = self.insert_analysis(session_id = session_id,
+                                           analysis_type = 'Variation_analysis',
+                                           instance_no = 0,
+                                           algorithm = 'Relative Standard Deviation',
+                                           version = '1.0',
+                                           commit=commit)
+        for info in spcm_info:
+            self.insert_sources(analysis_id, info["data_id"], commit=commit)
+        feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='Variation parameters', feature_idx=0, commit=commit)
+        self.insert_metrics(feature_id, result, commit=commit)
+       
+    def check_rawdata_integrity(self, session_id):
+        """檢查指定 session 的原始資料完整性，回傳缺失或異常的檔案清單。"""
+        rawdata_files = self.select_rawdata_files(session_id)
+        missing_files = []
+        for info in rawdata_files:
+            filepath = Path(self.db_path).parent / info['file_path']
+            if not filepath.exists():
+                missing_files.append(str(filepath))
+        return missing_files
