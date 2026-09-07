@@ -1,4 +1,11 @@
 PRAGMA foreign_keys = ON;
+-- =========================
+-- TestPlan
+-- =========================
+CREATE TABLE IF NOT EXISTS TestPlan (
+    test_id INTEGER PRIMARY KEY,
+    test_name TEXT NOT NULL,
+    UNIQUE (test_name));
 
 -- =========================
 -- DUT
@@ -105,6 +112,20 @@ CREATE TABLE IF NOT EXISTS ElectricInfo (
 CREATE INDEX IF NOT EXISTS idx_electric_data ON ElectricInfo (data_id);
 
 -- =========================
+-- RFInfo
+-- =========================
+CREATE TABLE IF NOT EXISTS RFInfo (
+    data_id INTEGER NOT NULL,
+    modulation TEXT NOT NULL,  -- e.g. 'NRZ', 'PAM4'
+    pattern TEXT,
+    baud_rate TEXT,
+    vpp TEXT,
+    PRIMARY KEY (data_id, pattern),
+    FOREIGN KEY (data_id) REFERENCES RawDataFiles(data_id) ON DELETE CASCADE);
+
+CREATE INDEX IF NOT EXISTS idx_rf_data ON RFInfo (data_id);
+
+-- =========================
 -- AnotherInfo
 -- =========================
 CREATE TABLE IF NOT EXISTS AnotherInfo (
@@ -122,8 +143,6 @@ CREATE TABLE IF NOT EXISTS Analyses (
     session_id INTEGER NOT NULL,
     analysis_type TEXT NOT NULL,   -- 'peak_detection'
     instance_no INTEGER NOT NULL,
-    algorithm TEXT NOT NULL,
-    version TEXT NOT NULL,
     created_time TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES MeasureSession(session_id) ON DELETE CASCADE,
     UNIQUE (session_id, analysis_type, instance_no));
@@ -152,8 +171,10 @@ CREATE TABLE IF NOT EXISTS Features (
     analysis_id INTEGER NOT NULL,
     feature_type TEXT NOT NULL,     -- 'peak', 'valley'
     feature_idx INTEGER NOT NULL, -- 0,1,2...
+    algorithm TEXT NOT NULL,
+    version TEXT NOT NULL,
     FOREIGN KEY (analysis_id) REFERENCES Analyses(analysis_id) ON DELETE CASCADE,
-    UNIQUE (analysis_id, feature_type, feature_idx));
+    UNIQUE (analysis_id, feature_type, feature_idx, algorithm, version));
 
 CREATE INDEX IF NOT EXISTS idx_feature_analysis ON Features (analysis_id);
 CREATE INDEX IF NOT EXISTS idx_feature_type ON Features (feature_type);
@@ -165,7 +186,7 @@ CREATE TABLE IF NOT EXISTS FeatureMetrics (
     metric_id INTEGER PRIMARY KEY,
     feature_id INTEGER NOT NULL,
     metric_key TEXT NOT NULL,      -- 'wavelength', 'intensity', 'fwhm'
-    metric_value REAL NOT NULL,
+    metric_value REAL,
     metric_unit TEXT,
 
     FOREIGN KEY (feature_id) REFERENCES Features(feature_id) ON DELETE CASCADE,

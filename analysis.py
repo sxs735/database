@@ -2,6 +2,9 @@ import csv,re
 import numpy as np
 import inspect
 from scipy.signal import find_peaks,peak_widths,peak_prominences,savgol_filter
+from pathlib import Path
+import zipfile
+import io
 
 def tofloat(value):
     try:
@@ -240,6 +243,35 @@ def read_dcvi(path):
                 'measured current': (tofloat(data[4]), 'A')}
         return data
 
+def read_csv_from_zip(zip_path, csv_name, encoding="utf-8-sig"):
+    """Read a named CSV member from a ZIP archive without pandas."""
+    zip_path = Path(zip_path)
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError(f"Not a valid ZIP file: {zip_path}")
+
+    with zipfile.ZipFile(zip_path) as archive:
+        if csv_name not in archive.namelist():
+            raise FileNotFoundError(f"CSV file '{csv_name}' was not found in {zip_path}")
+        with archive.open(csv_name) as binary_file:
+            with io.TextIOWrapper(binary_file, encoding=encoding, newline="") as open_text:
+                reader = csv.DictReader(open_text)
+                results = {}
+                for row in list(reader):
+                    if row['Source'] not in results:
+                        results[row['Source']] = {}
+                    value = re.sub(r'[<>:"/\\|?*]', '',row['Current'])
+                    try:
+                        value,unit = float(value), ''
+                    except Exception:
+                        try:
+                            value,unit = value.split()
+                            value = float(value)
+                        except Exception:
+                            value,unit = None, ''
+
+                    results[row['Source']][row['Name']] = value,unit
+                return results
+
 def MRM_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order=3):
     """
     MRM SPCM 頻譜分析函數
@@ -276,27 +308,45 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order
     frequency = 299792.458 / wavelength
     
     # 基線校正
-    baseline = np.polynomial.Polynomial.fit(wavelength, loss, baseline_order)
+    loss = loss-np.nanmin(loss)
+    baseline = np.polynomial.Polynomial.fit(wavelength, loss, baseline_order, w = 1/(np.abs(loss)+1e-6))
     loss_level = loss - baseline(wavelength)
     
     # 尋找谷值
-    valley_idx, _ = find_peaks(-loss_level, prominence=prominence, distance=distance)
+    valley_idx, _ = find_peaks(loss_level, prominence=prominence, distance=distance)
 
     wavelength_x = wavelength[valley_idx]
     frequency_x = frequency[valley_idx]
     valley_loss = loss_level[valley_idx]
 
     # 計算消光比 (Extinction Ratio)
-    ER = peak_prominences(-loss_level, valley_idx)[0]
+    ER = peak_prominences(loss_level, valley_idx)[0]
     
     # 計算 FWHM 和 Q factor
-    Ty = 10 ** (loss_level / 10)
+    Ty = 10 ** (-loss_level / 10)
     wavelength_spacing = np.median(np.diff(wavelength))
     ips_to_wavelength = lambda x: wavelength_spacing*x + wavelength[0]
-    widths, _, left_ips, right_ips = peak_widths(-Ty, valley_idx, rel_height=0.5)
+    widths, width_heights, left_ips, right_ips = peak_widths(-Ty, valley_idx, rel_height=0.5)
     FWHMnm = widths * wavelength_spacing
     FWHMGHz = (1/ips_to_wavelength(left_ips)-1/ips_to_wavelength(right_ips))*299792458
     Q = wavelength_x / FWHMnm
+
+    if False:
+        import matplotlib.pyplot as plt
+        print(width_heights)
+        plt.plot(wavelength, Ty, label='Loss Level (dB)')
+        #plt.plot(wavelength_x, valley_loss, 'ro', label='Valleys')
+        for i in range(len(left_ips)):
+            li = left_ips[i]*wavelength_spacing+wavelength[0]
+            ri = right_ips[i]*wavelength_spacing+wavelength[0]
+            y = width_heights[i]
+            plt.plot([li, ri], [-y, -y], 'g--')
+        plt.xlabel('Wavelength (nm)')
+        plt.ylabel('Loss Level (dB)')
+        plt.title(f'Extinction Ratio: {np.round(ER, 3).tolist()} dB')
+        plt.legend()
+        plt.grid()
+        plt.show()
 
     results = {'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB'),
                'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
@@ -329,7 +379,124 @@ def MRM_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order
             inspect.currentframe().f_code.co_name, 
             version)
 
-def MRM_SSRF_analysis(frequency,
+def MRM_SPCM_analysis_0(wavelength, loss, prominence=3, distance=5, baseline_order=3):
+    """
+    MRM SPCM 頻譜分析函數
+    
+    Parameters:
+    -----------
+    wavelength : array-like
+        波長數據 (nm)
+    loss : array-like
+        損耗數據 (dB)
+    prominence : float, optional
+        峰值顯著性閾值 (default: 2)
+    distance : int, optional
+        峰值間最小距離 (default: 5)
+    baseline_order : int, optional
+        基線擬合的多項式階數 (default: 3)
+    
+    Returns:
+    --------
+    tuple : (result_dict, algorithm_name, version)
+        result_dict  -> 包含 FSR、FWHM、Q factor 等分析參數的字典
+        algorithm_name -> 字串，指出所使用的分析函數名稱
+        version -> 字串，標記分析演算法版本
+    """
+    version = "0.0.0"
+    # 檢查輸入數據
+    if len(wavelength) != len(loss):
+        raise ValueError("wavelength 和 loss 的長度必須相同")
+    
+    if len(wavelength) < 10:
+        raise ValueError("數據點太少，無法進行分析")
+    
+    # 計算頻率 (THz)
+    frequency = 299792.458 / wavelength
+    
+    # 基線校正
+    #loss = loss-np.nanmin(loss)
+    baseline = np.polynomial.Polynomial.fit(wavelength, loss, baseline_order, w = 1/(np.abs(loss)+1e-6))
+    loss_level = loss# - baseline(wavelength)
+    
+    # 尋找谷值
+    valley_idx, _ = find_peaks(loss_level, prominence=prominence, distance=distance)
+
+    wavelength_x = wavelength[valley_idx]
+    frequency_x = frequency[valley_idx]
+    valley_loss = loss_level[valley_idx]
+
+    results = {'Valley Wavelength': (np.round(wavelength_x, 3).tolist(), 'nm'),
+               'Valley Frequency': (np.round(frequency_x, 3).tolist(), 'THz')}
+
+    # 檢查是否找到足夠的谷值
+    if len(valley_idx) < 2 and len(valley_idx) > 0:
+        return (results,
+                inspect.currentframe().f_code.co_name, 
+                version)
+    
+    # 計算 FSR (nm)
+    FSRnm = wavelength_x[1:] - wavelength_x[:-1]
+    FSRnm = np.vstack((np.r_[FSRnm, np.nan], np.r_[np.nan, FSRnm]))
+    FSRidx = np.nanargmax(FSRnm, axis=0)
+    FSRnm = np.nanmax(FSRnm, axis=0)
+    
+    # 計算 FSR (GHz)
+    FSRGHz = frequency_x[:-1] - frequency_x[1:]
+    FSRGHz = np.vstack((np.r_[FSRGHz, np.nan], np.r_[np.nan, FSRGHz]))
+    FSRGHz = FSRGHz[FSRidx, range(len(FSRidx))]
+
+    def find_width(transmission, threshold=0.5):
+        """Find the width of the transmission curve at a given threshold."""
+        valley_idx = np.argmin(transmission)
+        width_height = (transmission.max()-transmission.min())*threshold+transmission.min()
+        left = transmission[:valley_idx]
+        right = transmission[valley_idx:]
+        
+        left_x = np.arange(len(left))
+        left_idx = np.interp(width_height,left[::-1],left_x[::-1])
+
+        right_x = np.arange(valley_idx, len(transmission))
+        right_idx = np.interp(width_height,right,right_x)
+        width = right_idx - left_idx
+        return left_idx, right_idx, width
+
+    wavelength_spacing = np.median(np.diff(wavelength))
+    ips_to_wavelength = lambda x: wavelength_spacing*x + wavelength[0]
+
+    Ty = 10 ** (-loss_level / 10)
+    ER = []
+    FWHMnm = []
+    FWHMGHz = []
+    Q = []
+    for i, wl in enumerate(wavelength_x):
+        idx_0 = np.argmin(np.abs(wavelength - (wl - FSRnm[0]/2)))
+        idx_1 = np.argmin(np.abs(wavelength - (wl + FSRnm[0]/2)))
+        local_loss = loss_level[idx_0:idx_1 + 1]
+        local_T = Ty[idx_0:idx_1 + 1]
+        # 計算消光比 (Extinction Ratio)
+        ER.append(local_loss.max() - local_loss.min())
+        # 計算 FWHM 和 Q factor
+        left_ips, right_ips, widths = find_width(local_T, threshold=0.5)
+        left_ips, right_ips = left_ips + idx_0, right_ips + idx_0
+        fwhm = widths * wavelength_spacing
+        FWHMnm += [fwhm]
+        FWHMGHz += [(1/ips_to_wavelength(left_ips)-1/ips_to_wavelength(right_ips))*299792458]
+        Q += [wl / fwhm]
+
+    
+    results.update({'FSR(nm)': (np.round(FSRnm, 3).tolist(), 'nm'),
+                    'FSR(THz)': (np.round(FSRGHz, 3).tolist(), 'THz'),
+                    'FWHM(nm)': (np.round(FWHMnm, 3).tolist(), 'nm'),
+                    'FWHM(GHz)': (np.round(FWHMGHz, 3).tolist(), 'GHz'),
+                    'Q factor': (np.round(Q, 0).tolist(), ''),
+                    'Extinction Ratio': (np.round(ER, 3).tolist(), 'dB')})
+    
+    return (results,
+            inspect.currentframe().f_code.co_name, 
+            version)
+
+def S21_3dB_bandwidth(frequency,
                       s21,
                       reference_frequency: float = 0.5,
                       drop_levels= 3,
@@ -574,7 +741,7 @@ def CRR_SPCM_analysis(wavelength, loss, prominence=3, distance=5, baseline_order
             inspect.currentframe().f_code.co_name, 
             version)
 
-def SSRF_S11_impedance(frequency,s11):
+def S11_impedance(frequency,s11):
     """依據 S21 曲線估算小信號頻寬。
 
     Parameters
@@ -606,14 +773,20 @@ def SSRF_S11_impedance(frequency,s11):
             inspect.currentframe().f_code.co_name,
             version)
 
-def SSRF_S11_valley(frequency, s11):
+def S11_valley(frequency, s11):
     version = "1.0.0"
     s11_dB = 20*np.log10(np.abs(s11))
     #find s11_db valley position
-    sg_smooth = savgol_filter(s11_dB, len(frequency)//30, 3)
-    valley_idx, _ = find_peaks(-sg_smooth, prominence=0.1, distance=5)
+    sg_smooth = savgol_filter(s11_dB, len(frequency)//15, 3)
+    valley_idx, _ = find_peaks(-sg_smooth, prominence=0.5, distance=5)
     pos = frequency[valley_idx]
     dB = s11_dB[valley_idx]
+    if len(pos) > 1:
+        import matplotlib.pyplot as plt
+        plt.plot(frequency, s11_dB, label='S11(dB)')
+        plt.plot(frequency, sg_smooth, label='S11(dB) smooth')
+        plt.plot(pos, dB, 'ro', label='Valleys')
+        plt.show()
     result = {'valley_count': len(valley_idx),
               **{f'valley{i}_frq': value for i, value in enumerate(pos)},
               **{f'valley{i}': value for i, value in enumerate(dB)}}

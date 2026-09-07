@@ -14,7 +14,7 @@ from tqdm import tqdm
 class DatabaseAPI:
     """基於 SQLite 的資料庫 API，用於管理光譜測量數據"""
 
-    SUPPORTED_EXTENSIONS = {".csv", ".txt", ".s2p"}
+    SUPPORTED_EXTENSIONS = {".csv", ".txt", ".s2p",".zip"}
     IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     TABLE_DUT = "DUT"
     TABLE_MEASUREMENTS = "Measurement"
@@ -23,6 +23,7 @@ class DatabaseAPI:
     TABLE_DATA = "RawDataFiles"
     TABLE_OPTICAL_INFO = "OpticalInfo"
     TABLE_ELECTRIC_INFO = "ElectricInfo"
+    TABLE_RF_INFO = "RFInfo"
     TABLE_ANOTHER_INFO = "AnotherInfo"
     TABLE_ANALYSES = "Analyses"
     TABLE_ANALYSIS_SOURCES = "AnalysisSources"
@@ -42,7 +43,7 @@ class DatabaseAPI:
                               _(?P<ch_out>\d+)
                               _(?P<power>[^_]+)dBm
                               (?P<rest>.*)
-                              \.(?:csv|txt|s2p)$""",
+                              \.(?:csv|txt|s2p|zip)$""",
                               re.VERBOSE)
     
     def __init__(self, db_path: str = "measurement_data.db"):
@@ -60,12 +61,12 @@ class DatabaseAPI:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row  # 讓查詢結果可以像字典一樣訪問
         self.conn.execute("PRAGMA foreign_keys = ON")  # 啟用外鍵約束
-        
+
     def close(self):
         """關閉資料庫連接"""
         if self.conn:
             self.conn.close()
-            
+
     def __enter__(self):
         """Context manager 支援"""
         self.connect()
@@ -325,7 +326,7 @@ class DatabaseAPI:
             self.conn.commit()
         return data_id
 
-    # OpticalInfo / ElectricInfo / AnotherInfo
+    # OpticalInfo / ElectricInfo / RFInfo / AnotherInfo
     def insert_optical_info(self,
                             data_id: int,
                             input_channel: str,
@@ -379,6 +380,28 @@ class DatabaseAPI:
             self.conn.commit()
         return data_id
 
+    def insert_rf_info(self,
+                       data_id: int,
+                       baud_rate: str,
+                       modulation: str,
+                       pattern: str,
+                       vpp: str,
+                       commit: bool = True) -> int:
+        """插入或更新 RFInfo（同一 data_id + pattern 對應一行）。"""
+        cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_RF_INFO}
+                                   (data_id, modulation, pattern, baud_rate, vpp)
+                                   VALUES (?, ?, ?, ?, ?)
+                                   ON CONFLICT (data_id, pattern) DO UPDATE SET
+                                   modulation = excluded.modulation,
+                                   baud_rate = excluded.baud_rate,
+                                   vpp = excluded.vpp
+                                   RETURNING data_id""",
+                                   (data_id, modulation, pattern, baud_rate, vpp))
+        data_id = cursor.fetchone()["data_id"]
+        if commit:
+            self.conn.commit()
+        return data_id
+
     def insert_another_info(self, 
                             data_id: int, 
                             info_key: str, 
@@ -403,8 +426,6 @@ class DatabaseAPI:
                         session_id: int,
                         analysis_type: str,
                         instance_no: int,
-                        algorithm: Optional[str] = None,
-                        version: Optional[str] = None,
                         created_time: Optional[datetime] = None,
                         commit: bool = True) -> int:
         """
@@ -414,8 +435,6 @@ class DatabaseAPI:
             session_id: MeasureSession ID
             analysis_type: 分析類型（如 'peak_detection'）
             instance_no: 分析實例編號
-            algorithm: 具體演算法名稱
-            version: 演算法版本
             created_time: 創建時間（默認為當前時間）
             
         Returns:
@@ -423,20 +442,14 @@ class DatabaseAPI:
         """
         if created_time is None:
             created_time = datetime.now().replace(microsecond=0).isoformat(sep=" ")
-        if algorithm is None:
-            algorithm = "unspecified"
-        if version is None:
-            version = "1.0.0"
 
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_ANALYSES} 
-                                   (session_id, analysis_type, instance_no, algorithm, version, created_time)
-                                   VALUES (?, ?, ?, ?, ?, ?)
+                                   (session_id, analysis_type, instance_no, created_time)
+                                   VALUES (?, ?, ?, ?)
                                    ON CONFLICT (session_id, analysis_type, instance_no) DO UPDATE SET
-                                   algorithm = excluded.algorithm,
-                                   version = excluded.version,
                                    created_time = excluded.created_time
                                    RETURNING analysis_id""",
-                                   (session_id, analysis_type, instance_no, algorithm, version, created_time))
+                                   (session_id, analysis_type, instance_no, created_time))
         analysis_id = cursor.fetchone()["analysis_id"]
         if commit:
             self.conn.commit()
@@ -453,7 +466,13 @@ class DatabaseAPI:
             self.conn.commit()
     
     # Features 表
-    def insert_feature(self,analysis_id: int,feature_type: str,feature_idx: int, commit: bool = True) -> int:
+    def insert_feature(self,
+                       analysis_id: int,
+                       feature_type: str,
+                       feature_idx: int, 
+                       algorithm: str, 
+                       version: str, 
+                       commit: bool = True) -> int:
         """
         插入分析特徵記錄
         
@@ -466,12 +485,14 @@ class DatabaseAPI:
             feature_id
         """
         cursor = self.conn.execute(f"""INSERT INTO {self.TABLE_FEATURES} 
-                                   (analysis_id, feature_type, feature_idx)
-                                   VALUES (?, ?, ?)
-                                   ON CONFLICT (analysis_id, feature_type, feature_idx) DO UPDATE SET
-                                   feature_idx = excluded.feature_idx
+                                   (analysis_id, feature_type, feature_idx, algorithm, version)
+                                   VALUES (?, ?, ?, ?, ?)
+                                   ON CONFLICT (analysis_id, feature_type, feature_idx, algorithm, version) DO UPDATE SET
+                                   feature_idx = excluded.feature_idx,
+                                   algorithm = excluded.algorithm,
+                                   version = excluded.version
                                    RETURNING feature_id""",
-                                   (analysis_id, feature_type, feature_idx))
+                                   (analysis_id, feature_type, feature_idx, algorithm, version))
         feature_id = cursor.fetchone()["feature_id"]
         if commit:
             self.conn.commit()
@@ -529,9 +550,17 @@ class DatabaseAPI:
                     doe: Optional[str] = None,
                     die: Optional[int] = None,
                     cage: Optional[str] = None,
-                    device: Optional[str] = None) -> List[Dict[str, Any]]:
-        """依條件篩選 DUT，參數為 None 時表示不套用該條件。"""
-        sql = f"SELECT * FROM {self.TABLE_DUT} WHERE 1=1"
+                    device: Optional[str] = None,
+                    session_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """依條件篩選 DUT，支援以 MeasureSession.session_id 反查對應 DUT。"""
+        if session_id is not None:
+            sql = f"""SELECT DISTINCT d.*
+                      FROM {self.TABLE_DUT} d
+                      JOIN {self.TABLE_MEASUREMENTS} m ON d.DUT_id = m.DUT_id
+                      JOIN {self.TABLE_MEASURE_SESSIONS} ms ON m.measure_id = ms.measure_id
+                      WHERE 1=1"""
+        else:
+            sql = f"SELECT * FROM {self.TABLE_DUT} WHERE 1=1"
         params: List[Any] = []
 
         if dut_id is not None:
@@ -552,6 +581,9 @@ class DatabaseAPI:
         if device is not None:
             sql += " AND device = ?"
             params.append(device)
+        if session_id is not None:
+            sql += " AND ms.session_id = ?"
+            params.append(session_id)
 
         sql += " ORDER BY DUT_id"
         return self.query(sql, tuple(params))
@@ -672,6 +704,16 @@ class DatabaseAPI:
         sql += " ORDER BY ms.session_id, ms.session_idx"
         return self.query(sql, tuple(params))
 
+    def select_session_info(self, session_id: int) -> Optional[Dict[str, Any]]:
+        """依 session_id 回傳完整 MeasureSession 資料，並整合 DUT 與 Measurement 資訊。"""
+        sql = f"""SELECT ms.*, m.measure_name, m.measured_start, m.measured_end, m.operator, m.system, m.notes,
+                          d.wafer, d.DOE, d.die, d.cage, d.device
+                  FROM {self.TABLE_MEASURE_SESSIONS} ms
+                  JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
+                  JOIN {self.TABLE_DUT} d ON m.DUT_id = d.DUT_id
+                  WHERE ms.session_id = ?"""
+        rows = self.query(sql, (session_id,))
+        return rows[0] if rows else None
     # Conditions 查詢
     def select_conditions(self, data_id: int) -> List[Dict[str, Any]]:
         """查詢特定會話的所有實驗條件"""
@@ -733,6 +775,14 @@ class DatabaseAPI:
                     r[f] = []
         return rows
 
+    def select_rawdata_info(self, data_id: int) -> Optional[Dict[str, Any]]:
+        """依 data_id 回傳完整 RawDataFiles 資料，並整合光學/電性/其它資訊。"""
+        rows = self.query(f"SELECT * FROM {self.TABLE_DATA} WHERE data_id = ?", (data_id,))
+        if not rows:
+            return None
+        info = dict(rows[0])
+        return info
+
     def select_data_by_dut_id(self, dut_id: int):
         sql = f"""SELECT r.data_id, r.file_path
                   FROM {self.TABLE_DATA} r
@@ -768,17 +818,20 @@ class DatabaseAPI:
         return self.query(f"SELECT * FROM {self.TABLE_ANOTHER_INFO} WHERE data_id = ?", (data_id,))
 
     # Analyses 查詢
-    def select_analyses(self,measure_name: str,feature_type: str) -> List[Dict[str, Any]]:
-        """依 measure_name 與 feature_type 查詢對應的 analysis_id。"""
-        sql = f"""SELECT DISTINCT a.analysis_id
+    def select_analyses(self,measure_name: str,analysis_type: str) -> List[Dict[str, Any]]:
+        """依 measure_name 與 analysis_type 查詢 Analyses，並輸出 session_id。"""
+        sql = f"""SELECT DISTINCT a.analysis_id,
+                                            a.session_id,
+                                            a.analysis_type,
+                                            a.instance_no,
+                                            a.created_time
                             FROM {self.TABLE_ANALYSES} a
                             JOIN {self.TABLE_MEASURE_SESSIONS} ms ON a.session_id = ms.session_id
                             JOIN {self.TABLE_MEASUREMENTS} m ON ms.measure_id = m.measure_id
-                            JOIN {self.TABLE_FEATURES} f ON a.analysis_id = f.analysis_id
                             WHERE m.measure_name = ?
-                                AND f.feature_type = ?
+                                AND a.analysis_type = ?
                             ORDER BY a.analysis_id"""
-        return self.query(sql, (measure_name, feature_type))
+        return self.query(sql, (measure_name, analysis_type))
         
     # AnalysisSources 查詢
     def select_analysis_sources(self, analysis_id: int) -> List[Dict[str, Any]]:
@@ -791,23 +844,18 @@ class DatabaseAPI:
     # Features 查詢
     # FeatureMetrics 查詢
     def select_featuremetrics(self,
-                              session_id: int,
-                              feature_idx: int,
+                              analysis_id: int,
                               metric_key: str) -> List[Dict[str, Any]]:
-        """依 session_id、feature_idx、metric_key 查詢 metric_value、metric_unit 與對應 data_id（不篩選 feature_type）。"""
+        """依 analysis_id、metric_key 查詢 feature_idx 與 metric_value。"""
 
-        sql = f"""SELECT src.data_id,
-                                            fm.metric_value,
-                                            fm.metric_unit
+        sql = f"""SELECT f.feature_idx,
+                                            fm.metric_value
                             FROM {self.TABLE_METRICS} fm
                             JOIN {self.TABLE_FEATURES} f ON fm.feature_id = f.feature_id
-                            JOIN {self.TABLE_ANALYSES} a ON f.analysis_id = a.analysis_id
-                            JOIN {self.TABLE_ANALYSIS_SOURCES} src ON src.analysis_id = a.analysis_id
-                            WHERE a.session_id = ?
-                                AND f.feature_idx = ?
+                            WHERE f.analysis_id = ?
                                 AND fm.metric_key = ?
-                            ORDER BY a.analysis_id, src.data_id, fm.metric_id"""
-        return self.query(sql, (session_id, feature_idx, metric_key))
+                            ORDER BY f.feature_idx, fm.metric_id"""
+        return self.query(sql, (analysis_id, metric_key))
 
     # =========================
     # 4. 刪除資料 (DELETE)
@@ -1041,6 +1089,7 @@ class DatabaseAPI:
         rest = result.pop("rest")
 
         result["SMU"] = []
+        result["RF"] = {}
         result["arguments"] = []
 
         if not rest:
@@ -1063,7 +1112,7 @@ class DatabaseAPI:
                 i += 4
                 ec_i += 1
                 continue
-            if i + 2 < len(tokens) and token != "arg" and not pass_SMU:
+            if i + 2 < len(tokens) and token != "arg" and token != "RF" and not pass_SMU:
                 match = re.match(r"([-+]?\d*\.?\d+)([a-zA-Z%]*)", tokens[i + 2])
                 result["SMU"].append({"element": tokens[i],
                                       "channel": tokens[i + 1],
@@ -1072,8 +1121,15 @@ class DatabaseAPI:
                 i += 3
                 ec_i += 1
                 continue
+            if token == "RF":
+                result["RF"] = {"baud_rate": tokens[i + 1],
+                                "modulation": tokens[i + 2],
+                                "pattern": tokens[i + 3]}
+                i += 4
+                pass_SMU = True
+                continue
             if token == "arg":
-                result["arguments"].append({f"arg": tokens[i + 1]})
+                result["arguments"].append({"arg": tokens[i + 1]})
                 arg_i += 1
                 i += 2
                 pass_SMU = True
@@ -1115,11 +1171,11 @@ class DatabaseAPI:
         if len(valid_files) == 0:
             print("資料夾內沒有符合格式的檔案。")
             print('testing filename parsing')
-            try:
-                file_path = list(folder.glob("*.csv"))[0]
-            except IndexError:
-                file_path = list(folder.glob("*.s2p"))[0]
-            cls.test_filename_parsing(file_path.name)
+            # try:
+            #     file_path = list(folder.glob("*.csv"))[0]
+            # except IndexError:
+            #     file_path = list(folder.glob("*.s2p"))[0]
+            # cls.test_filename_parsing(file_path.name)
             raise ValueError("資料夾內沒有符合格式的檔案。")
         return valid_files, invalid_files,min(birthtime),max(birthtime)
 
@@ -1176,6 +1232,34 @@ class DatabaseAPI:
             return True
         except Exception:
             return False
+
+    def import_N1000A_results_by_session(self, session_id, commit=True):
+            lsrf_info = self.select_rawdata_files(session_id, data_type='LSRF')
+            for idx, info in enumerate(lsrf_info):
+                filepath = Path(self.db_path).parent / info['file_path']
+                # 這裡應該加入讀取 N1000A 結果的程式碼
+                # 假設讀取結果後得到 result, algorithm_name, version
+
+                try:
+                    results = read_csv_from_zip(zip_path=filepath, csv_name="Results Window Results.csv")
+                except Exception as e:
+                    print(f"Failed to read results from {filepath}: {e}")
+                    continue
+    
+                analysis_id = self.insert_analysis(session_id = session_id,
+                                                  analysis_type = 'N1000A_analysis',
+                                                  instance_no = idx,
+                                                  commit=False)
+                self.insert_sources(analysis_id, info["data_id"], commit=commit)
+    
+                for source, metrics in results.items():
+                    feature_id = self.insert_feature(analysis_id=analysis_id, 
+                                                    feature_type='Eye Diagram', 
+                                                    feature_idx= 0 if source == '1A' else 1,
+                                                    algorithm = 'N1000A',
+                                                    version = '1.0.0',
+                                                    commit=commit)
+                    self.insert_metrics(feature_id, metrics, commit=commit)
     
     def import_from_measurement_folder(self,
                                        folder_path,
@@ -1197,6 +1281,8 @@ class DatabaseAPI:
         target_root_path = Path(self.db_path).parent / self.RAW_DATA_FOLDER
         target_dir = (target_root_path / session_name)
         notice, note_file = self.read_note(folder)
+
+        lsrf_session_id = []
 
         try:
             # 若資料庫不存在則依 schema 初始化（已存在會拋例外並忽略）
@@ -1247,6 +1333,7 @@ class DatabaseAPI:
                 session_id = self.insert_session(measure_id, session_idx, commit=False)
 
                 smu_entries = file_info.pop("SMU")
+                rf_entries = file_info.pop("RF")
                 arguments = file_info.pop("arguments")
 
                 wavelength_start=None
@@ -1268,7 +1355,6 @@ class DatabaseAPI:
                     dst = target_dir / filepath.name
                     relative_dst = dst.relative_to(target_root_path.parent)
 
-
                 data_id = self.insert_rawdata_file(session_id=session_id,
                                                    data_type=file_info["datatype"],
                                                    recorded_at=filepath.stat().st_mtime,
@@ -1289,6 +1375,7 @@ class DatabaseAPI:
                                          wavelength_stop=wavelength_stop,
                                          sweep_rate=sweep_rate,
                                          commit=False)
+                
                 for row in smu_entries:
                     self.insert_electric_info(data_id=data_id,
                                               element=row["element"],
@@ -1296,7 +1383,17 @@ class DatabaseAPI:
                                               set_mode=row["set_mode"],
                                               set_value=row["set_value"],
                                               commit=False)
-                    
+
+                if file_info["datatype"] in ["SSRF","LSRF"]:
+                    self.insert_rf_info(data_id=data_id,
+                                        baud_rate=rf_entries.get("baud_rate", None),
+                                        modulation=rf_entries.get("modulation", 'small'),
+                                        pattern=rf_entries.get("pattern", None),
+                                        vpp = None,
+                                        commit=False)
+                    if file_info["datatype"] == "LSRF":
+                        lsrf_session_id += [session_id]
+               
                 for idx, row in enumerate(arguments):
                     self.insert_another_info(data_id=data_id,
                                              info_key=f'arg_{idx}',
@@ -1314,6 +1411,9 @@ class DatabaseAPI:
             if self.conn:
                 self.conn.rollback()
             raise
+
+        for session_id in list(set(lsrf_session_id)):
+            self.import_N1000A_results_by_session(session_id)
 
         print(f"匯入資料庫完成")
         if folder.is_dir():
@@ -1334,16 +1434,19 @@ class DatabaseAPI:
             x = spcm[:, 0]
             col = 3 if spcm.shape[1] == 5 else 2
             y = spcm[:, col] - spcm[:, 1]
-            result, algorithm_name, version = MRM_SPCM_analysis(x, y,prominence=2.5)
+            result, algorithm_name, version = MRM_SPCM_analysis_0(x, y,prominence=2.5,baseline_order=3)
             analysis_id = self.insert_analysis(session_id = session_id,
                                             analysis_type = 'MRM_SPCM_analysis',
                                             instance_no = instance_no,
-                                            algorithm = algorithm_name,
-                                            version = version,
                                             commit=commit)
             self.insert_sources(analysis_id, info["data_id"], commit=commit)
             for i in range(len(result['Valley Wavelength'][0])):
-                feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='Basic parameters', feature_idx=i, commit=commit)
+                feature_id = self.insert_feature(analysis_id=analysis_id, 
+                                                 feature_type='Basic', 
+                                                 feature_idx=i,
+                                                 algorithm = algorithm_name,
+                                                 version = version,
+                                                 commit=commit)
                 result_idx = {key:(result[key][0][i],result[key][1]) for key in result}
                 self.insert_metrics(feature_id, result_idx, commit=commit)
 
@@ -1478,42 +1581,42 @@ class DatabaseAPI:
             header,frequency,s11, s21, s12, s22 = read_ssrf(Path(self.db_path).parent / info['file_path'])
             frequency = np.real(frequency)
             s21 = 20*np.log10(np.abs(s21))
-            result, algorithm_name, version = MRM_SSRF_analysis(frequency,s21, smooth_window=7,polyorder=2)
+            result, algorithm_name, version = S21_3dB_bandwidth(frequency,s21, smooth_window=7,polyorder=2)
             analysis_id = self.insert_analysis(session_id = session_id,
-                                               analysis_type = 'MRM_SSRF-MTK',
+                                               analysis_type = 'SSRF analysis dB-tuning',
                                                instance_no = no,
-                                               algorithm = algorithm_name,
-                                               version = version,
                                                commit=False)
             idx = int(np.where(group[info['input_power']][info['voltage']] == info['wavelength'])[0][0])
 
             self.insert_sources(analysis_id, info["data_id"], commit=False)
-            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='SSRF parameters', feature_idx=idx, commit=False)
+            feature_id = self.insert_feature(analysis_id=analysis_id, 
+                                             feature_type='S21', 
+                                             feature_idx=idx,
+                                             algorithm = algorithm_name,
+                                             version = version,
+                                             commit=False)
             self.insert_metrics(feature_id, result, commit=False)
 
 
-            result, algorithm_name, version = SSRF_S11_impedance(frequency,s11)
-            analysis_id = self.insert_analysis(session_id = session_id,
-                                                analysis_type = 'S11 impedance',
-                                                instance_no = no,
-                                                algorithm = algorithm_name,
-                                                version = version,
-                                                commit=commit)
+            result, algorithm_name, version = S11_impedance(frequency,s11)
             self.insert_sources(analysis_id, info["data_id"], commit=commit)
-            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='S11 impedance', feature_idx=idx, commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, 
+                                             feature_type='S11', 
+                                             feature_idx=idx,
+                                             algorithm = algorithm_name,
+                                             version = version, 
+                                             commit=commit)
             self.insert_metrics(feature_id, result, commit=commit)
 
 
-            result, algorithm_name, version = SSRF_S11_valley(frequency,s11)
-            analysis_id = self.insert_analysis(session_id = session_id,
-                                            analysis_type = 'S11 valley',
-                                            instance_no = no,
-                                            algorithm = algorithm_name,
-                                            version = version,
-                                            commit=commit)
+            result, algorithm_name, version = S11_valley(frequency,s11)
             self.insert_sources(analysis_id, info["data_id"], commit=commit)
-
-            feature_id = self.insert_feature(analysis_id=analysis_id, feature_type='S11 valley', feature_idx=idx, commit=commit)
+            feature_id = self.insert_feature(analysis_id=analysis_id, 
+                                             feature_type='S11', 
+                                             feature_idx=idx,
+                                             algorithm = algorithm_name,
+                                             version = version,
+                                             commit=commit)
             self.insert_metrics(feature_id, result, commit=commit)
             
     def __Variation_analysis_by_session(self,session_id,commit=True):

@@ -16,15 +16,7 @@ for folder in ['260624_mCouple_repeat']:
         print(f'Importing folder: {folder}')
         db.import_from_measurement_folder(folder_path,schema_file="schema.sql")
         #db.restore_database(create_backup=False)
-#%%
-measure_name = '260205_mapping'
-print("Starting batch MRM_SPCM analysis...")
-print(f"measure_name: {measure_name}")
-with DatabaseAPI(db_path) as db:
-    sessions = db.select_session(measure_name = measure_name)
-    for session in tqdm(sessions, desc="Sessions"):
-        db.MRM_SPCM_analysis_by_session(session['session_id'],commit=False)
-    db.conn.commit()
+
 #%%
 print("Starting MRM OMA analysis...")
 print(f"Processing cage: {cage}, measure_name: {measure_name}")
@@ -194,92 +186,4 @@ with DatabaseAPI(db_path) as db:
 
 
 
-# %%
-import matplotlib.pyplot as plt
-save_folder = Path(r"X:\2.Results\260623_MTK_MRM")
-wafer1 = '260623_MTK_MRM_1'
-wafer2 = '260623_MTK_MRM'
-wafer3 = '260623_MTK_MRM_3'
-cage = 'cage45'
-power = '10 dBm'
-metrics = ['FSR(THz)', 'Q factor', 'Exrinction Ratio','Valley Wavelength']
-with DatabaseAPI(db_path) as db:
-    sessions_1 = db.select_session(measure_name = wafer1,cage = cage)
-    sessions_2 = db.select_session(measure_name = wafer2,cage = cage)
-    sessions_3 = db.select_session(measure_name = wafer3,cage = cage)
-
-    def collect_metric_values(metric_name):
-        query_key = metric_name
-        if metric_name == 'Exrinction Ratio':
-            query_key = 'Extinction Ratio'
-
-        value = {'IDN9N480.00#1': [], 'IDN9N480.00#2': [], 'IDN9N480.00#4': []}
-        session_group_pairs = [
-            (sessions_1, 'IDN9N480.00#1'),
-            (sessions_2, 'IDN9N480.00#2'),
-            (sessions_3, 'IDN9N480.00#4')
-        ]
-        for sessions, group_key in session_group_pairs:
-            for session in sessions:
-                raw = db.select_rawdata_files(session['session_id'], optical_input_power=power, data_type='SPCM')
-                if not raw:
-                    continue
-                data_id = raw[0]['data_id']
-                rows = db.select_featuremetrics(session['session_id'], feature_idx=1, metric_key=query_key)
-                value[group_key] += [r['metric_value'] for r in rows if r['data_id'] == data_id]
-        return value
-
-    fig1, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 5))
-    if len(metrics) == 1:
-        axes = [axes]
-
-    for ax, metric in zip(axes, metrics):
-        value = collect_metric_values(metric)
-        labels = [k for k, v in value.items() if len(v) > 0]
-        mueller_data = [value[k] for k in labels]
-
-        for k in labels:
-            mean = np.mean(value[k])
-            std = np.std(value[k])
-            median = np.median(value[k])
-            print(f'{metric} | {k}, {mean:.4f}, {median:.4f}, {std:.4f}, {mean-4.5*std:.4f}, {mean+4.5*std:.4f}')
-
-        if len(mueller_data) == 0:
-            ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title(f"{metric} @ {power} ({cage})")
-            ax.set_xticks([])
-            ax.set_yticks([])
-            continue
-
-        ax.boxplot(mueller_data,
-                   tick_labels=labels,
-                   patch_artist=True,
-                   showmeans=False,
-                   boxprops=dict(facecolor='none', edgecolor='red', linewidth=1.5),
-                   whiskerprops=dict(color='red', linewidth=1.2),
-                   capprops=dict(color='red', linewidth=1.2),
-                   medianprops=dict(color='red', linewidth=1.5))
-
-        for i, y in enumerate(mueller_data, start=1):
-            x = np.random.normal(loc=i, scale=0.04, size=len(y))
-            ax.scatter(x, y,
-                       s=28,
-                       alpha=0.7,
-                       color='black',
-                       edgecolors='white',
-                       linewidths=0.6,
-                       zorder=3)
-
-        ax.set_title(f"{metric} @ {power} ({cage})")
-        ax.set_xlabel("Wafer ID")
-        ax.set_ylabel(metric)
-        ax.grid(axis='y', linestyle='--', alpha=0.4)
-
-    fig1.tight_layout()
-    plt.show()
-
-    save_path = save_folder / f"boxplot_3metrics_{power.replace(' ', '')}_{cage}.png"
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig1.savefig(save_path, dpi=200)
-    print(f"Saved: {save_path}")
 
